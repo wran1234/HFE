@@ -1,0 +1,809 @@
+import { useEffect, useRef, useState, useCallback, useReducer } from "react";
+import {
+  Video,
+  VideoOff,
+  Mic,
+  MicOff,
+  Send,
+  FileText,
+  StopCircle,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
+  Volume2,
+  Camera,
+  ChevronRight,
+} from "lucide-react";
+import { HFEWebSocketClient } from "../lib/wsClient";
+import {
+  HazardObservation,
+  SnapshotData,
+  UserProfile,
+  RoomId,
+  AssessmentReport,
+  ROOM_NAMES,
+  buildRoomSequence,
+} from "../lib/types";
+import { toAssessmentReport } from "../lib/reportTransform";
+import RoomProgressBar from "./RoomProgressBar";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "ai" | "system";
+  text: string;
+  timestamp: number;
+}
+
+// ── Room state machine ────────────────────────────────────────────────────────
+
+interface RoomState {
+  currentRoom: RoomId;
+  completedRooms: RoomId[];
+}
+
+type RoomAction =
+  | { type: "ADVANCE"; room: RoomId }
+  | { type: "RESET"; firstRoom: RoomId };
+
+function roomReducer(state: RoomState, action: RoomAction): RoomState {
+  switch (action.type) {
+    case "ADVANCE":
+      return {
+        currentRoom: action.room,
+        completedRooms: state.completedRooms.includes(state.currentRoom)
+          ? state.completedRooms
+          : [...state.completedRooms, state.currentRoom],
+      };
+    case "RESET":
+      return { currentRoom: action.firstRoom, completedRooms: [] };
+    default:
+      return state;
+  }
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+const FRAME_INTERVAL_MS = 1500;
+
+interface VideoAssistantProps {
+  profile: UserProfile;
+  onReportReady: (report: AssessmentReport) => void;
+}
+
+export default function VideoAssistant({ profile, onReportReady }: VideoAssistantProps) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<HFEWebSocketClient | null>(null);
+  const frameTimerRef = useRef<number | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const snapshotsRef = useRef<SnapshotData[]>([]);
+  const aiSummaryRef = useRef<string>("");
+
+  const roomSequence = buildRoomSequence(profile);
+  const [roomState, dispatchRoom] = useReducer(roomReducer, {
+    currentRoom: roomSequence[0] ?? "entryway",
+    completedRooms: [],
+  });
+
+  const [status, setStatus] = useState<
+    "idle" | "connecting" | "active" | "ending"
+  >("idle");
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [observations, setObservations] = useState<HazardObservation[]>([]);
+  const [textInput, setTextInput] = useState("");
+  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [missingViews, setMissingViews] = useState<string[]>([]);
+  const [snapshotFlash, setSnapshotFlash] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const speechRef = useRef<any>(null);
+  const speechActiveRef = useRef(false); // true when we WANT recognition running
+
+  const addMessage = useCallback((role: ChatMessage["role"], text: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        role,
+        text,
+        timestamp: Date.now(),
+      },
+    ]);
+  }, []);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Camera
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: { ideal: "environment" }, // rear camera on mobile
+        },
+        audio: true,
+      });
+      mediaStreamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setIsCameraOn(true);
+      setIsMicOn(true);
+    } catch {
+      addMessage("system", "Camera access denied. Please enable camera permissions.");
+    }
+  };
+
+  const stopCamera = () => {
+    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    mediaStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setIsCameraOn(false);
+    setIsMicOn(false);
+  };
+
+  const captureFrame = useCallback((quality = 0.5): string | null => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) return null;
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, 640, 480);
+    const dataUrl = canvas.toDataURL("image/jpeg", quality);
+    return dataUrl.split(",")[1];
+  }, []);
+
+  // Frame capture loop
+  const startFrameCapture = useCallback(() => {
+    frameTimerRef.current = window.setInterval(() => {
+      const frame = captureFrame(0.5);
+      if (frame && wsRef.current?.isConnected) {
+        wsRef.current.sendVideoFrame(frame);
+      }
+    }, FRAME_INTERVAL_MS);
+  }, [captureFrame]);
+
+  const stopFrameCapture = () => {
+    if (frameTimerRef.current !== null) {
+      clearInterval(frameTimerRef.current);
+      frameTimerRef.current = null;
+    }
+  };
+
+  const startAssessment = async () => {
+    setStatus("connecting");
+    addMessage("system", "Connecting to AI safety expert...");
+
+    const client = new HFEWebSocketClient();
+    wsRef.current = client;
+
+    client.onMessage((msg) => {
+      switch (msg.type) {
+        case "connected":
+          // Immediately start session with profile
+          client.startSession(profile, roomSequence);
+          break;
+
+        case "session_started":
+          setSessionId(String(msg.payload.sessionId ?? ""));
+          break;
+
+        case "session_resumed":
+          setSessionId(String(msg.payload.sessionId ?? ""));
+          break;
+
+        case "status":
+          addMessage("system", String(msg.payload.message ?? ""));
+          break;
+
+        case "ai_message": {
+          setIsAiTyping(false);
+          const text = String(msg.payload.text ?? "");
+          addMessage("ai", text);
+          aiSummaryRef.current = text;
+          break;
+        }
+
+        case "ai_message_chunk": {
+          // Streaming chunk — append to the last AI message or start a new one
+          setIsAiTyping(false);
+          const chunk = String(msg.payload.text ?? "");
+          setMessages((prev) => {
+            if (prev.length > 0 && prev[prev.length - 1].role === "ai") {
+              const updated = [...prev];
+              updated[updated.length - 1] = {
+                ...updated[updated.length - 1],
+                text: updated[updated.length - 1].text + chunk,
+              };
+              return updated;
+            }
+            return [
+              ...prev,
+              {
+                id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                role: "ai" as const,
+                text: chunk,
+                timestamp: Date.now(),
+              },
+            ];
+          });
+          break;
+        }
+
+        case "ai_typing": {
+          setIsAiTyping(true);
+          break;
+        }
+
+        case "observation": {
+          const obs = msg.payload as unknown as HazardObservation;
+          setObservations((prev) => {
+            if (prev.some((o) => o.id === obs.id)) return prev;
+            return [...prev, obs];
+          });
+          break;
+        }
+
+        case "room_change": {
+          const room = String(msg.payload.room ?? "") as RoomId;
+          dispatchRoom({ type: "ADVANCE", room });
+          setMissingViews([]);
+          addMessage(
+            "system",
+            `Now assessing: ${String(msg.payload.roomName ?? room)}`
+          );
+          break;
+        }
+
+        case "inspection_state":
+          setMissingViews((msg.payload.missingViews ?? []) as string[]);
+          break;
+
+        case "follow_up_prompt": {
+          const prompts = (msg.payload.prompts ?? []) as string[];
+          if (prompts.length) addMessage("system", prompts.join(" • "));
+          break;
+        }
+
+        case "missing_views": {
+          const missing = (msg.payload.missingViews ?? []) as string[];
+          setMissingViews(missing);
+          if (missing.length) addMessage("system", `Please show: ${missing.join(", ")}`);
+          break;
+        }
+
+        case "snapshot_request": {
+          const hazardId = String(msg.payload.hazardId ?? "");
+          const label = String(msg.payload.label ?? "");
+          // Capture snapshot immediately
+          setTimeout(() => {
+            const frame = captureFrame(0.6);
+            if (frame) {
+              setSnapshotFlash(true);
+              setTimeout(() => setSnapshotFlash(false), 600);
+              const snap: SnapshotData = {
+                hazardId,
+                base64: frame,
+                label,
+                room: roomState.currentRoom,
+              };
+              snapshotsRef.current = [...snapshotsRef.current, snap];
+              // Attach snapshot to matching observation
+              setObservations((prev) =>
+                prev.map((o) =>
+                  o.id === hazardId ? { ...o, snapshotBase64: frame } : o
+                )
+              );
+            }
+          }, 200);
+          break;
+        }
+
+        case "turn_complete":
+          setIsAiTyping(false);
+          break;
+
+        case "report_ready": {
+          const backendReport = msg.payload.report as Parameters<typeof toAssessmentReport>[0];
+          const report = toAssessmentReport(backendReport, profile);
+          report.observations = report.observations.map((obs) => ({
+            ...obs,
+            snapshotBase64: snapshotsRef.current.find((s) => s.hazardId === obs.id)?.base64,
+          }));
+          onReportReady(report);
+          break;
+        }
+
+        case "error":
+          if (String(msg.payload.message ?? "") === "Internal server error.") {
+            addMessage("system", "Something went wrong. Please end the session and try again.");
+          } else {
+            addMessage("system", `Error: ${String(msg.payload.message ?? "")}`);
+          }
+          setStatus("idle");
+          break;
+      }
+    });
+
+    try {
+      await client.connect();
+      await startCamera();
+      setStatus("active");
+      setIsAiTyping(true);
+      startFrameCapture();
+      dispatchRoom({ type: "RESET", firstRoom: roomSequence[0] ?? "entryway" });
+      // Auto-start voice input — seamless conversation from the start
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (SR && !isIOS) {
+        startContinuousSpeech();
+      } else {
+        addMessage("system", isIOS
+          ? "Voice input isn't supported on iOS. Type your messages, or use Chrome on Android for hands-free voice."
+          : "Voice input not available in this browser. Use Chrome or Edge for hands-free voice.");
+      }
+    } catch {
+      addMessage("system", "Failed to connect. Is the server running?");
+      setStatus("idle");
+    }
+  };
+
+  const sendMessage = (overrideText?: string) => {
+    const text = (overrideText ?? textInput).trim();
+    if (!text || !wsRef.current?.isConnected) return;
+    addMessage("user", text);
+    wsRef.current.sendTextMessage(text);
+    setTextInput("");
+    setIsAiTyping(true);
+  };
+
+  const startContinuousSpeech = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+
+    speechActiveRef.current = true;
+
+    const recognition = new SR();
+    recognition.continuous = false; // restart manually so mic stays hot
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+
+    recognition.onstart = () => setIsListening(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      const transcript = (event.results[0]?.[0]?.transcript ?? "").trim();
+      if (transcript) {
+        // Direct call — don't go through textInput state
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            role: "user" as const,
+            text: transcript,
+            timestamp: Date.now(),
+          },
+        ]);
+        wsRef.current?.sendTextMessage(transcript);
+        setIsAiTyping(true);
+      }
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      // Restart after transient errors (no-speech, audio-capture) if still active
+      if (speechActiveRef.current) {
+        setTimeout(() => {
+          if (speechActiveRef.current) startContinuousSpeech();
+        }, 800);
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      // Auto-restart as long as the session is active
+      if (speechActiveRef.current) {
+        setTimeout(() => {
+          if (speechActiveRef.current) startContinuousSpeech();
+        }, 300);
+      }
+    };
+
+    speechRef.current = recognition;
+    try {
+      recognition.start();
+    } catch {
+      // Already started — ignore
+    }
+  }, [setMessages, setIsAiTyping]);
+
+  const stopSpeech = useCallback(() => {
+    speechActiveRef.current = false;
+    speechRef.current?.stop();
+    speechRef.current = null;
+    setIsListening(false);
+  }, []);
+
+  const toggleSpeech = () => {
+    if (!isMicOn) return; // mic muted — don't start recognition
+    if (speechActiveRef.current) {
+      stopSpeech();
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      if (!SR) {
+        addMessage("system", "Speech recognition not supported. Use Chrome or Edge.");
+        return;
+      }
+      startContinuousSpeech();
+    }
+  };
+
+  const generateReport = () => {
+    setStatus("ending");
+    addMessage("system", "Completing assessment and generating your safety report...");
+    wsRef.current?.requestReport();
+    setIsAiTyping(true);
+  };
+
+  const stopAssessment = () => {
+    stopSpeech();
+    stopFrameCapture();
+    stopCamera();
+    wsRef.current?.endSession();
+    wsRef.current?.close();
+    wsRef.current = null;
+    setStatus("idle");
+    setIsAiTyping(false);
+    addMessage("system", "Assessment stopped.");
+  };
+
+  useEffect(() => {
+    return () => {
+      speechActiveRef.current = false;
+      speechRef.current?.stop();
+      stopFrameCapture();
+      stopCamera();
+      wsRef.current?.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const highCount = observations.filter((o) => o.priority === "high").length;
+  const medCount = observations.filter((o) => o.priority === "medium").length;
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Room progress */}
+      {status === "active" && (
+        <div className="card animate-fade-in">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+              Assessment Progress
+            </p>
+            <p className="text-xs text-slate-500">
+              {roomState.completedRooms.length}/{roomSequence.length} rooms complete
+            </p>
+          </div>
+          <RoomProgressBar
+            sequence={roomSequence}
+            currentRoom={roomState.currentRoom}
+            completedRooms={roomState.completedRooms}
+          />
+          <div className="mt-3 flex items-center gap-2">
+            <div className="w-2 h-2 bg-brand-400 rounded-full animate-pulse" />
+            <p className="text-sm font-medium text-brand-300">
+              Currently: {ROOM_NAMES[roomState.currentRoom]}
+            </p>
+            {missingViews.length > 0 && (
+              <span className="text-xs text-amber-400">
+                Missing: {missingViews.slice(0, 2).join(", ")}
+              </span>
+            )}
+            {status === "active" && (
+              <button
+                onClick={() => wsRef.current?.sendTextMessage(`Let's move to the next room.`)}
+                className="ml-auto text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
+              >
+                Next room <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Left: Video + Controls */}
+        <div className="lg:col-span-2 flex flex-col gap-4">
+          {/* Video */}
+          <div
+            className={`relative bg-slate-900 rounded-2xl overflow-hidden aspect-video border transition-colors ${
+              snapshotFlash ? "border-brand-400" : "border-slate-800"
+            }`}
+          >
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-full object-cover ${!isCameraOn ? "hidden" : ""}`}
+            />
+            <canvas ref={canvasRef} className="hidden" />
+
+            {!isCameraOn && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-500">
+                <VideoOff className="w-16 h-16" />
+                <p className="text-lg font-medium">Camera is off</p>
+                {status === "idle" && (
+                  <p className="text-sm">Click "Start Assessment" below</p>
+                )}
+              </div>
+            )}
+
+            {isCameraOn && (
+              <>
+                <div className="absolute top-3 left-3 flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 bg-red-600 text-white text-xs font-bold px-2.5 py-1 rounded-full">
+                    <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                    LIVE
+                  </div>
+                  {isMicOn && (
+                    <div className="flex items-center gap-1.5 bg-slate-900/80 text-slate-300 text-xs px-2 py-1 rounded-full border border-slate-700">
+                      <Volume2 className="w-3 h-3" />
+                    </div>
+                  )}
+                </div>
+
+                {snapshotFlash && (
+                  <div className="absolute inset-0 bg-white/20 flex items-center justify-center animate-fade-in pointer-events-none">
+                    <div className="flex items-center gap-2 bg-white/90 text-slate-900 px-4 py-2 rounded-full text-sm font-semibold">
+                      <Camera className="w-4 h-4" />
+                      Snapshot captured
+                    </div>
+                  </div>
+                )}
+
+                {observations.length > 0 && (
+                  <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
+                    {highCount > 0 && (
+                      <div className="badge-high text-[10px]">
+                        <AlertTriangle className="w-3 h-3 mr-1" />
+                        {highCount} urgent
+                      </div>
+                    )}
+                    {medCount > 0 && (
+                      <div className="badge-medium text-[10px]">{medCount} medium</div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Controls */}
+          <div className="card">
+            <div className="flex flex-wrap items-center gap-3">
+              {status === "idle" && (
+                <button onClick={startAssessment} className="btn-primary">
+                  <Video className="w-4 h-4" />
+                  Start Assessment
+                </button>
+              )}
+
+              {status === "connecting" && (
+                <button disabled className="btn-primary opacity-60 cursor-not-allowed">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Connecting...
+                </button>
+              )}
+
+              {status === "active" && (
+                <>
+                  <button
+                    onClick={() => {
+                      if (isMicOn) {
+                        mediaStreamRef.current
+                          ?.getAudioTracks()
+                          .forEach((t) => (t.enabled = false));
+                        stopSpeech();
+                      } else {
+                        mediaStreamRef.current
+                          ?.getAudioTracks()
+                          .forEach((t) => (t.enabled = true));
+                        startContinuousSpeech();
+                      }
+                      setIsMicOn((v) => !v);
+                    }}
+                    className={isMicOn ? "btn-secondary" : "btn-danger"}
+                  >
+                    {isMicOn ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                    {isMicOn ? "Mute" : "Unmute"}
+                  </button>
+
+                  <button onClick={generateReport} className="btn-primary">
+                    <FileText className="w-4 h-4" />
+                    Generate Report
+                  </button>
+
+                  <button onClick={stopAssessment} className="btn-secondary">
+                    <StopCircle className="w-4 h-4" />
+                    Stop
+                  </button>
+                </>
+              )}
+
+              {status === "ending" && (
+                <div className="flex items-center gap-2 text-brand-400">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-sm font-medium">
+                    Analyzing findings and building report...
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Text input */}
+            {status === "active" && (
+              <div className="flex gap-2 mt-4">
+                <button
+                  onClick={toggleSpeech}
+                  title={speechActiveRef.current ? "Mute voice input" : "Enable voice input"}
+                  className={`py-2.5 px-3 rounded-xl border font-medium text-sm transition-all ${
+                    isListening
+                      ? "bg-brand-600 border-brand-500 text-white animate-pulse"
+                      : speechActiveRef.current
+                      ? "bg-slate-700 border-slate-600 text-slate-300"
+                      : "bg-slate-800 border-slate-700 text-slate-500 hover:text-white hover:border-slate-600"
+                  }`}
+                >
+                  {speechActiveRef.current ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                </button>
+                <input
+                  type="text"
+                  value={textInput}
+                  onChange={(e) => setTextInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+                  placeholder={isListening ? "Listening..." : "Speak or type a message"}
+                  className="flex-1 bg-slate-800 border border-slate-700 text-white placeholder-slate-500 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+                />
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={!textInput.trim()}
+                  className="btn-primary py-2.5 px-4 disabled:opacity-40"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Chat + Hazards */}
+        <div className="flex flex-col gap-4">
+          {/* AI Chat */}
+          <div className="card flex flex-col" style={{ maxHeight: "380px" }}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-2 h-2 bg-brand-400 rounded-full animate-pulse-slow" />
+              <h3 className="text-sm font-semibold text-slate-300">AI Safety Expert</h3>
+              {sessionId && (
+                <span className="text-[10px] text-slate-500">Session {sessionId.slice(-6)}</span>
+              )}
+              {snapshotsRef.current.length > 0 && (
+                <span className="ml-auto text-xs text-slate-500">
+                  <Camera className="w-3 h-3 inline mr-1" />
+                  {snapshotsRef.current.length} photo{snapshotsRef.current.length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-0">
+              {messages.length === 0 && (
+                <p className="text-slate-600 text-sm text-center py-8">
+                  Start the assessment to begin
+                </p>
+              )}
+
+              {messages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`animate-fade-in ${
+                    msg.role === "system"
+                      ? "text-slate-500 text-xs text-center italic"
+                      : msg.role === "user"
+                      ? "flex justify-end"
+                      : ""
+                  }`}
+                >
+                  {msg.role === "system" && <p>{msg.text}</p>}
+                  {msg.role === "user" && (
+                    <div className="bg-brand-700/40 border border-brand-600/30 text-brand-100 text-sm px-3 py-2 rounded-xl max-w-[90%]">
+                      {msg.text}
+                    </div>
+                  )}
+                  {msg.role === "ai" && (
+                    <div className="bg-slate-800 border border-slate-700 text-slate-200 text-sm px-3 py-2.5 rounded-xl leading-relaxed">
+                      {msg.text}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {isAiTyping && (
+                <div className="flex items-center gap-2 text-slate-500 text-sm">
+                  <div className="flex gap-1">
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" />
+                  </div>
+                  <span>AI is analyzing...</span>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+          </div>
+
+          {/* Hazard log */}
+          <div className="card flex flex-col" style={{ maxHeight: "300px" }}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-300">Hazards Found</h3>
+              <span className="text-xs text-slate-500">{observations.length} total</span>
+            </div>
+
+            <div className="overflow-y-auto space-y-2 flex-1">
+              {observations.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-6 text-slate-600">
+                  <CheckCircle className="w-8 h-8" />
+                  <p className="text-xs text-center">No hazards yet</p>
+                </div>
+              ) : (
+                observations.map((obs) => (
+                  <div
+                    key={obs.id}
+                    className="flex items-start gap-2 p-2.5 bg-slate-800/60 rounded-lg border border-slate-700/50 animate-slide-up"
+                  >
+                    <div className="flex flex-col items-start gap-1 shrink-0">
+                      <span
+                        className={
+                          obs.priority === "high"
+                            ? "badge-high text-[10px]"
+                            : obs.priority === "medium"
+                            ? "badge-medium text-[10px]"
+                            : "badge-low text-[10px]"
+                        }
+                      >
+                        {obs.adjustedSeverity}/10
+                      </span>
+                      {obs.snapshotBase64 && (
+                        <Camera className="w-3 h-3 text-brand-400" />
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium text-slate-400">
+                        {ROOM_NAMES[obs.room]} · {obs.category}
+                      </p>
+                      <p className="text-xs text-slate-300 mt-0.5 line-clamp-2">
+                        {obs.hazard}
+                      </p>
+                      <p className="text-[10px] text-red-400 mt-0.5">
+                        {obs.fallProbability}% fall probability
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x:*)",
+      "Bash(node -e \"const g = require\\('@google/genai'\\); console.log\\(Object.keys\\(g\\)\\)\")",
+      "Bash(node -e \"const g = require\\('@google/genai'\\); const s = new g.Session\\(\\); console.log\\(Object.getOwnPropertyNames\\(Object.getPrototypeOf\\(s\\)\\)\\)\")",
+      "Bash(node:*)",
+      "Skill(plan-eng-review)",
+      "Skill(design-consultation)",
+      "Bash(open:*)",
+      "Bash(sed -i '' 's|url\\(.https://images.unsplash.com/photo-1581579438747-1dc8d17bbce4[^\\)]*\\)|url\\(https://images.pexels.com/photos/3768131/pexels-photo-3768131.jpeg?auto=compress\\\\&cs=tinysrgb\\\\&w=1600\\\\&h=900\\\\&fit=crop\\)|g' /tmp/hfe-design-preview.html)",
+      "Bash(sed -i '' 's|url\\(.https://images.unsplash.com/photo-1576765608535-5f04d1e3f289[^\\)]*\\)|url\\(https://images.pexels.com/photos/7551644/pexels-photo-7551644.jpeg?auto=compress\\\\&cs=tinysrgb\\\\&w=900\\\\&h=1100\\\\&fit=crop\\)|g' /tmp/hfe-design-preview.html)",
+      "Bash(python3:*)",
+      "Skill(gstack-upgrade)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
