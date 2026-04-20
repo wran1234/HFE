@@ -67,7 +67,7 @@ export default function ContractorScope({ observations }: ContractorScopeProps) 
       lines.push("-".repeat(35));
       items.forEach((item, i) => {
         lines.push(`${i + 1}. ${item.location}: ${item.recommendation}`);
-        lines.push(`   Est. Cost: $${item.costMin}–$${item.costMax}`);
+        lines.push(`   Est. Cost: ${item.costMin != null ? `$${item.costMin}–$${item.costMax}` : "TBD"}`);
         lines.push(`   Priority: ${item.urgency}`);
       });
     });
@@ -134,8 +134,8 @@ export default function ContractorScope({ observations }: ContractorScopeProps) 
       {Object.entries(byTrade).map(([trade, items]) => {
         const cfg = TRADE_CONFIG[trade] ?? TRADE_CONFIG.handyman;
         const Icon = cfg.icon;
-        const totalMin = items.reduce((s, i) => s + i.costMin, 0);
-        const totalMax = items.reduce((s, i) => s + i.costMax, 0);
+        const totalMin = items.reduce((s, i) => s + (i.costMin ?? 0), 0);
+        const totalMax = items.reduce((s, i) => s + (i.costMax ?? 0), 0);
 
         return (
           <div key={trade} className={`border rounded-2xl p-6 shadow-sm ${cfg.bg}`}>
@@ -163,7 +163,7 @@ export default function ContractorScope({ observations }: ContractorScopeProps) 
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs font-semibold text-warm-700">
-                        ${item.costMin}–${item.costMax}
+                        {item.costMin != null ? `$${item.costMin}–$${item.costMax}` : "—"}
                       </p>
                       <span
                         className={`text-[10px] font-medium ${
