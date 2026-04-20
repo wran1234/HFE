@@ -3,12 +3,23 @@ import { RoomId } from "./types";
 const jsonHeaders = { "Content-Type": "application/json" };
 
 export async function apiFetch(path: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(path, { headers: jsonHeaders, ...init });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({})) as { error?: string };
-    throw new Error(body.error ?? `Request failed: ${response.status}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(path, { headers: jsonHeaders, signal: controller.signal, ...init });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(body.error ?? `Request failed: ${response.status}`);
+    }
+    return response.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return response.json();
 }
 
 export async function createInspectionSession(payload: {
