@@ -36,7 +36,10 @@
       "Bash(~/.claude/skills/gstack/bin/gstack-review-read *)",
       "Bash(~/.claude/skills/gstack/bin/gstack-learnings-log '{\"skill\":\"plan-ceo-review\",\"type\":\"pitfall\",\"key\":\"reportTransform-mapping-gap\",\"insight\":\"HazardType enum values \\(underscore_case\\) do not match PRODUCT_MAP keys \\(Title Case\\). Always verify that frontend lookup tables use the exact string values from the backend enum, not a transformed version.\",\"confidence\":9,\"source\":\"observed\",\"files\":[\"client/src/lib/reportTransform.ts\",\"client/src/components/ShoppingList.tsx\"]}')",
       "Bash(npx tsc:*)",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "Bash(curl -s http://localhost:8080/api/auth/me)",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Skill(qa)"
     ]
   }
 }
