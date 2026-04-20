@@ -21,35 +21,15 @@ Each item has a rationale, effort estimate, and priority.
 
 ---
 
-## TODO-2: Rename `inMemoryDatabase.ts` to `repository.ts`
+## ~~TODO-2: Rename `inMemoryDatabase.ts` to `repository.ts`~~
 
-**What:** Rename `server/src/data/inMemoryDatabase.ts` to `repository.ts` (or `db.ts`) and update all imports.
-
-**Why:** The file is fully Postgres-backed via Prisma. The name is actively misleading — any new engineer will spend time questioning whether there's a real in-memory layer in the code path.
-
-**Pros:** Reduces onboarding confusion. Makes intent clear.
-
-**Cons:** Churn — every file that imports it needs updating (~10 files).
-
-**Context:** Grep `from "../data/inMemoryDatabase"` to find all callers.
-
-**Effort:** S (human: 30 min / CC: 5 min) | **Priority:** P3 | **Depends on:** None.
+**Fixed by feat/hardening-and-revenue-layer, 2026-04-20.** File renamed to `server/src/data/repository.ts`, all imports updated.
 
 ---
 
-## TODO-3: Idempotent report persistence (`persistReportPayload`)
+## ~~TODO-3: Idempotent report persistence (`persistReportPayload`)~~
 
-**What:** Change `persistReportPayload` to upsert by `sessionId` rather than insert. Add a unique constraint on `ReportSnapshot.sessionId`.
-
-**Why:** Two code paths can write a report for the same session: WS `request_report` and REST `POST /api/sessions/:id/finalize`. Frontend uses only WS, but the REST endpoint is live and callable. Concurrent or duplicate calls produce duplicate report rows.
-
-**Pros:** Closes a latent data integrity bug. Makes the endpoint idempotent (safe to retry).
-
-**Cons:** Small — Prisma upsert + schema migration.
-
-**Context:** `server/src/reporting/reportBuilder.ts#persistReportPayload`. Prisma schema: `ReportSnapshot` model.
-
-**Effort:** S (human: 30 min / CC: 10 min) | **Priority:** P2 | **Depends on:** Hardening pass ships first.
+**Fixed by feat/hardening-and-revenue-layer, 2026-04-20.** Unique constraint added via migration `20260414000000_report_snapshot_unique_constraint`. `persistReportPayload` updated to upsert by `sessionId`.
 
 ---
 
@@ -84,7 +64,9 @@ Each item has a rationale, effort estimate, and priority.
 
 **Context:** `client/src/components/PremiumSection.tsx`, `ShoppingList.tsx`, `ContractorScope.tsx`. Architecture doc has "Extension Path" section describing subsidyEngine and contractorMatchService as post-assessment enrichments.
 
-**Effort:** M (human: 1 week / CC: 1 hr for affiliate links) | **Priority:** P1 | **Depends on:** Hardening pass ships first.
+**Progress (2026-04-20):** ContractorScope lead capture form + `/api/leads/contractor` endpoint are now wired. PremiumSection subsidy eligibility checker and OT/3D links are live. ShoppingList component built. Affiliate links still need to be added to ShoppingList products.
+
+**Effort:** S remaining (affiliate links only) | **Priority:** P1 | **Depends on:** Hardening pass ships first.
 
 ---
 
