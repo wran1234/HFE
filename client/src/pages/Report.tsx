@@ -188,7 +188,7 @@ function HazardCard({ obs }: { obs: HazardObservation }) {
           </div>
           <div className="flex items-center justify-between mt-1">
             <span className="text-xs text-warm-400">Risk Reduction if Fixed</span>
-            <span className="text-sm font-bold text-green-600">−{obs.riskReductionPercent}%</span>
+            <span className="text-sm font-bold text-green-600">{obs.riskReductionPercent != null ? `−${obs.riskReductionPercent}%` : "—"}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-warm-400">Estimated Cost</span>
@@ -333,11 +333,11 @@ export default function ReportPage() {
       ? report.profile.subjectName
       : "the resident";
 
-  const totalCostMin = obs.reduce((s, o) => s + o.costMin, 0);
-  const totalCostMax = obs.reduce((s, o) => s + o.costMax, 0);
+  const totalCostMin = obs.reduce((s, o) => s + (o.costMin ?? 0), 0);
+  const totalCostMax = obs.reduce((s, o) => s + (o.costMax ?? 0), 0);
   const avgRiskReduction =
     obs.length > 0
-      ? Math.round(obs.reduce((s, o) => s + o.riskReductionPercent, 0) / obs.length)
+      ? Math.round(obs.reduce((s, o) => s + (o.riskReductionPercent ?? 0), 0) / obs.length)
       : 0;
 
   const TABS: { id: TabId; label: string }[] = [
@@ -496,7 +496,7 @@ export default function ReportPage() {
                     <h3 className="font-semibold text-warm-900 mb-3">Room-by-Room Risk Heatmap</h3>
                     <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                       {Object.entries(byRoom).map(([room, roomObs]) => {
-                        const maxSeverity = Math.max(...roomObs.map((o) => o.adjustedSeverity));
+                        const maxSeverity = Math.max(...roomObs.map((o) => o.adjustedSeverity ?? 0));
                         const bg =
                           maxSeverity >= 8
                             ? "bg-red-50 border-red-200"
@@ -558,8 +558,8 @@ export default function ReportPage() {
                               <p className="text-xs text-warm-500 mt-0.5">{o.recommendation}</p>
                             </div>
                             <div className="text-right shrink-0">
-                              <p className="text-sm font-bold text-red-600">{o.adjustedSeverity}/10</p>
-                              <p className="text-xs text-warm-400">{o.fallProbability}% risk</p>
+                              <p className="text-sm font-bold text-red-600">{o.adjustedSeverity ?? "—"}/10</p>
+                              <p className="text-xs text-warm-400">{o.fallProbability != null ? `${o.fallProbability}% risk` : ""}</p>
                             </div>
                           </div>
                         ))}
