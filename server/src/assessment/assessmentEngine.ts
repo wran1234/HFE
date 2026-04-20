@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 import { RecommendationPriority, SeverityLevel } from "../domain/enums";
 import { AssessmentResult, FinalHazard, HazardObservation, InspectionSession } from "../domain/types";
 import { buildRecommendation } from "./recommendationEngine";

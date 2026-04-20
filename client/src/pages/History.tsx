@@ -25,20 +25,50 @@ interface ReportItem {
 export default function HistoryPage() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
+  const [sessionsCursor, setSessionsCursor] = useState<string | null>(null);
+  const [reportsCursor, setReportsCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  const [loadingMoreReports, setLoadingMoreReports] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listSessions(), listReports()])
+    Promise.all([listSessions({ limit: 20 }), listReports({ limit: 20 })])
       .then(([sessionResponse, reportResponse]) => {
         setSessions(sessionResponse.sessions);
         setReports(reportResponse.reports);
+        setSessionsCursor(sessionResponse.nextCursor);
+        setReportsCursor(reportResponse.nextCursor);
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load history.");
       })
       .finally(() => setLoading(false));
   }, []);
+
+  function loadMoreSessions() {
+    if (!sessionsCursor || loadingMoreSessions) return;
+    setLoadingMoreSessions(true);
+    listSessions({ limit: 20, cursor: sessionsCursor })
+      .then((res) => {
+        setSessions((prev) => [...prev, ...res.sessions]);
+        setSessionsCursor(res.nextCursor);
+      })
+      .catch(() => setError("Failed to load more sessions. Please try again."))
+      .finally(() => setLoadingMoreSessions(false));
+  }
+
+  function loadMoreReports() {
+    if (!reportsCursor || loadingMoreReports) return;
+    setLoadingMoreReports(true);
+    listReports({ limit: 20, cursor: reportsCursor })
+      .then((res) => {
+        setReports((prev) => [...prev, ...res.reports]);
+        setReportsCursor(res.nextCursor);
+      })
+      .catch(() => setError("Failed to load more reports. Please try again."))
+      .finally(() => setLoadingMoreReports(false));
+  }
 
   if (loading) {
     return <div className="p-8 text-warm-500">Loading history...</div>;
@@ -89,6 +119,17 @@ export default function HistoryPage() {
               </div>
             ))}
           </div>
+          {sessionsCursor && (
+            <div className="mt-3 text-center">
+              <button
+                onClick={loadMoreSessions}
+                disabled={loadingMoreSessions}
+                className="text-sm text-brand-600 hover:text-brand-700 font-medium disabled:opacity-50"
+              >
+                {loadingMoreSessions ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -113,6 +154,17 @@ export default function HistoryPage() {
                 </Link>
               </div>
             ))}
+          </div>
+        )}
+        {reportsCursor && (
+          <div className="mt-3 text-center">
+            <button
+              onClick={loadMoreReports}
+              disabled={loadingMoreReports}
+              className="text-sm text-brand-600 hover:text-brand-700 font-medium disabled:opacity-50"
+            >
+              {loadingMoreReports ? "Loading..." : "Load more"}
+            </button>
           </div>
         )}
       </div>

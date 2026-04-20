@@ -1,4 +1,4 @@
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 
 export async function runAuthCleanup(retentionHours: number): Promise<{
   expiredSessionsDeleted: number;

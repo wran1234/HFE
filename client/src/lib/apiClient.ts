@@ -2,6 +2,15 @@ import { RoomId } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
+export async function apiFetch(path: string, init?: RequestInit): Promise<unknown> {
+  const response = await fetch(path, { headers: jsonHeaders, ...init });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { error?: string };
+    throw new Error(body.error ?? `Request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
 export async function createInspectionSession(payload: {
   residentAge: number;
   mobilityAid: "none" | "cane" | "walker" | "wheelchair";
@@ -42,10 +51,11 @@ export async function fetchReport(sessionId: string) {
   return response.json() as Promise<{ report: unknown }>;
 }
 
-export async function listSessions() {
-  const response = await fetch("/api/sessions");
-  if (!response.ok) throw new Error("Failed to list sessions");
-  return response.json() as Promise<{
+export async function listSessions(params?: { limit?: number; cursor?: string }) {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.cursor) qs.set("cursor", params.cursor);
+  return apiFetch(`/api/sessions${qs.size ? `?${qs}` : ""}`) as Promise<{
     sessions: Array<{
       id: string;
       createdAt: string;
@@ -56,13 +66,15 @@ export async function listSessions() {
       overallRiskLevel?: string;
       reportAvailable: boolean;
     }>;
+    nextCursor: string | null;
   }>;
 }
 
-export async function listReports() {
-  const response = await fetch("/api/reports");
-  if (!response.ok) throw new Error("Failed to list reports");
-  return response.json() as Promise<{
+export async function listReports(params?: { limit?: number; cursor?: string }) {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.cursor) qs.set("cursor", params.cursor);
+  return apiFetch(`/api/reports${qs.size ? `?${qs}` : ""}`) as Promise<{
     reports: Array<{
       sessionId: string;
       createdAt: string;
@@ -71,5 +83,6 @@ export async function listReports() {
       roomCount?: number;
       summary?: string;
     }>;
+    nextCursor: string | null;
   }>;
 }

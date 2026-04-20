@@ -16,7 +16,27 @@
       "Bash(git remote:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh repo:*)",
+      "Bash(git symbolic-ref:*)",
+      "Read(//Users/williamran/.claude/skills/**)",
+      "Read(//Users/williamran/.claude/skills/gstack/review/**)",
+      "Bash(grep -rn '$queryRaw\\\\|$executeRaw' /Users/williamran/Desktop/HFE/server/src/)",
+      "Bash(grep -v \"hazardEngine.ts\" echo \"---\")",
+      "Bash(grep -n 'saveAssessment\\\\|$transaction' /Users/williamran/Desktop/HFE/server/src/data/inMemoryDatabase.ts)",
+      "Bash(npx prisma:*)",
+      "Bash(sed -i '' 's|from \"../data/inMemoryDatabase\"|from \"../data/repository\"|g' /Users/williamran/Desktop/HFE/server/src/reporting/reportBuilder.ts /Users/williamran/Desktop/HFE/server/src/auth/authCleanup.ts /Users/williamran/Desktop/HFE/server/src/auth/authService.ts /Users/williamran/Desktop/HFE/server/src/auth/authMiddleware.ts /Users/williamran/Desktop/HFE/server/src/assessment/assessmentEngine.ts /Users/williamran/Desktop/HFE/server/src/realtime/sessionOrchestrator.ts)",
+      "Bash(sed -i '' 's|from \"../../data/inMemoryDatabase\"|from \"../../data/repository\"|g' /Users/williamran/Desktop/HFE/server/src/auth/__tests__/authService.test.ts)",
+      "Bash(sed -i '' 's|from \"./data/inMemoryDatabase\"|from \"./data/repository\"|g' /Users/williamran/Desktop/HFE/server/src/index.ts)",
+      "WebSearch",
+      "Bash(~/.claude/skills/gstack/bin/gstack-review-read *)",
+      "Bash(~/.claude/skills/gstack/bin/gstack-learnings-log '{\"skill\":\"plan-ceo-review\",\"type\":\"pitfall\",\"key\":\"reportTransform-mapping-gap\",\"insight\":\"HazardType enum values \\(underscore_case\\) do not match PRODUCT_MAP keys \\(Title Case\\). Always verify that frontend lookup tables use the exact string values from the backend enum, not a transformed version.\",\"confidence\":9,\"source\":\"observed\",\"files\":[\"client/src/lib/reportTransform.ts\",\"client/src/components/ShoppingList.tsx\"]}')",
+      "Bash(npx tsc:*)",
+      "Bash(npm test *)"
     ]
   }
 }

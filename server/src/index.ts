@@ -14,10 +14,10 @@ import { createEmailSenderFromEnv } from "./auth/emailSenderFactory";
 import { clientIpFromRequest } from "./auth/rateLimit";
 import { SharedAuthRateLimiter } from "./auth/sharedAuthRateLimiter";
 import { runAssessmentEngine } from "./assessment/assessmentEngine";
-import { db } from "./data/inMemoryDatabase";
+import { db } from "./data/repository";
 import { RoomType } from "./domain/enums";
 import { REQUIRED_ROOM_ORDER } from "./domain/roomChecklists";
-import { ReportPayload, SessionContextUpdate } from "./domain/types";
+import { HazardObservation, ReportPayload, SessionContextUpdate } from "./domain/types";
 import { SessionOrchestrator } from "./realtime/sessionOrchestrator";
 import { buildReportPayload, persistReportPayload } from "./reporting/reportBuilder";
 import { GcsStorageAdapter } from "./storage/gcsStorageAdapter";
@@ -33,6 +33,9 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.GEMINI_API_KEY) {
     console.error("FATAL: GEMINI_API_KEY must be set in production");
     process.exit(1);
+  }
+  if (!process.env.ALLOWED_ORIGIN) {
+    console.warn("WARNING: ALLOWED_ORIGIN not set in production. CORS will default to http://localhost:5173 which will block all browser requests.");
   }
 }
 
@@ -261,23 +264,17 @@ app.post("/api/maintenance/auth-cleanup", async (req, res) => {
   }
 });
 
-app.post("/api/auth/cleanup", async (req, res) => {
-  const key = req.headers["x-maintenance-key"];
-  if (!AUTH_MAINTENANCE_KEY || key !== AUTH_MAINTENANCE_KEY) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  try {
-    const cleanup = await runCleanupWithLogs();
-    return res.json(cleanup);
-  } catch (error) {
-    console.error(`[AUTH] cleanup failed: ${String(error)}`);
-    return res.status(500).json({ error: "Cleanup failed." });
-  }
-});
+
 
 app.get("/api/sessions", requireAuth, async (req, res) => {
-  const sessions = await db.listSessionsForUser(req.authUser!.id);
-  return res.json({ sessions });
+  const limit = Math.min(Math.max(1, Number(req.query.limit ?? 20)), 100);
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  try {
+    const { sessions, nextCursor } = await db.listSessionsForUser(req.authUser!.id, { limit, cursor });
+    return res.json({ sessions, nextCursor });
+  } catch {
+    return res.status(400).json({ error: "Invalid cursor." });
+  }
 });
 
 app.post("/api/sessions", requireAuth, async (req, res) => {
@@ -326,20 +323,33 @@ app.post("/api/sessions/:id/context", requireAuth, async (req, res) => {
   return res.json({ session });
 });
 
+const VALID_ROOM_TYPES_SET = new Set<string>(["entryway", "living_room", "bedroom", "bathroom", "kitchen", "stairs", "exterior_entry"]);
+const VALID_HAZARD_TYPES_SET = new Set<string>(["poor_lighting", "missing_handrail", "slippery_floor", "loose_rug", "clutter_trip_hazard", "narrow_walkway", "high_threshold", "missing_grab_bar", "unsafe_stairs", "uneven_floor", "outdoor_step_risk"]);
+const VALID_SEVERITY_SET = new Set<string>(["low", "medium", "high", "critical"]);
+const VALID_STATUS_SET = new Set<string>(["candidate", "validated", "dismissed"]);
+
 app.post("/api/sessions/:id/observations", requireAuth, async (req, res) => {
   const session = await db.getSession(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found." });
   if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
+  const roomType = String(req.body.roomType ?? "");
+  const hazardType = String(req.body.hazardType ?? "");
+  const severityHint = String(req.body.severityHint ?? "medium");
+  const status = String(req.body.status ?? "candidate");
+  if (!VALID_ROOM_TYPES_SET.has(roomType)) return res.status(400).json({ error: "Invalid roomType." });
+  if (!VALID_HAZARD_TYPES_SET.has(hazardType)) return res.status(400).json({ error: "Invalid hazardType." });
+  if (!VALID_SEVERITY_SET.has(severityHint)) return res.status(400).json({ error: "Invalid severityHint." });
+  if (!VALID_STATUS_SET.has(status)) return res.status(400).json({ error: "Invalid status." });
   const observation = await db.createObservation({
     sessionId: session.id,
     roomScanId: req.body.roomScanId,
-    roomType: req.body.roomType,
-    hazardType: req.body.hazardType,
-    severityHint: req.body.severityHint ?? "medium",
+    roomType: roomType as RoomType,
+    hazardType: hazardType as HazardObservation["hazardType"],
+    severityHint: severityHint as HazardObservation["severityHint"],
     evidenceImagePath: req.body.evidenceImagePath,
     modelNote: req.body.modelNote ?? "",
     followUpNeeded: !!req.body.followUpNeeded,
-    status: req.body.status ?? "candidate",
+    status: status as HazardObservation["status"],
   });
   return res.status(201).json({ observation });
 });
@@ -389,9 +399,17 @@ app.get("/api/sessions/:id/report", requireAuth, async (req, res) => {
 });
 
 app.get("/api/reports", requireAuth, async (req, res) => {
-  const reports = await db.listReportsForUser(req.authUser!.id);
+  const limit = Math.min(Math.max(1, Number(req.query.limit ?? 20)), 100);
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  let items: Awaited<ReturnType<typeof db.listReportsForUser>>["reports"];
+  let nextCursor: string | null;
+  try {
+    ({ reports: items, nextCursor } = await db.listReportsForUser(req.authUser!.id, { limit, cursor }));
+  } catch {
+    return res.status(400).json({ error: "Invalid cursor." });
+  }
   return res.json({
-    reports: reports.map((item) => {
+    reports: items.map((item) => {
       const report = item.reportJson as ReportPayload;
       return {
         sessionId: item.sessionId,
@@ -402,7 +420,46 @@ app.get("/api/reports", requireAuth, async (req, res) => {
         summary: report?.overallRiskSummary?.summary ?? "",
       };
     }),
+    nextCursor,
   });
+});
+
+app.post("/api/leads/contractor", requireAuth, async (req, res) => {
+  const ip = clientIpFromRequest(req.ip, typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"] : undefined);
+  const rl = await sharedAuthLimiter.enforce({ endpoint: "leads:contractor", ip, strictOnProviderError: false });
+  if (!rl.allowed) {
+    return res.status(429).json({ error: "Too many requests. Please try again later." });
+  }
+  const name = String(req.body.name ?? "").trim();
+  const email = String(req.body.email ?? "").trim().toLowerCase();
+  const zip = String(req.body.zip ?? "").trim();
+  const phone = req.body.phone ? String(req.body.phone).trim() : undefined;
+  const scopeSummary = String(req.body.scopeSummary ?? "").trim();
+  if (!name || !email.includes("@") || !/^\d{5}(-\d{4})?$/.test(zip)) {
+    return res.status(400).json({ error: "name, a valid email, and a 5-digit zip are required." });
+  }
+  if (scopeSummary.length > 10_000) {
+    return res.status(400).json({ error: "Scope summary is too long (max 10,000 characters)." });
+  }
+  const accountEmail = req.authUser!.email;
+  // Dedup: skip DB insert if same user submitted a lead for this zip in the last hour
+  const recentLead = await db.findRecentContractorLead(req.authUser!.id, zip);
+  if (!recentLead) {
+    try {
+      await db.saveContractorLead({ userId: req.authUser!.id, name, email, zip, phone, scopeSummary });
+    } catch (err) {
+      console.error("[LEAD] DB save failed:", String(err));
+      return res.status(500).json({ error: "Unable to submit request right now. Please try again." });
+    }
+  }
+  try {
+    await authService.getEmailSender().sendContractorLeadNotification({ name, email, accountEmail, zip, phone, scopeSummary });
+    console.info(`[LEAD] contractor lead name=${name} email=${email} zip=${zip}`);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error(`[LEAD] failed to send contractor lead notification: ${String(error)}`);
+    return res.status(500).json({ error: "Unable to submit request right now. Please try again." });
+  }
 });
 
 const clientBuildPath = path.join(__dirname, "../../client/dist");

@@ -430,55 +430,67 @@ export class PostgresDatabase {
     await prisma.$transaction([
       prisma.finalHazard.deleteMany({ where: { sessionId: result.sessionId } }),
       prisma.recommendation.deleteMany({ where: { sessionId: result.sessionId } }),
+      ...result.finalHazards.map((hazard) =>
+        prisma.finalHazard.create({
+          data: {
+            id: hazard.id,
+            sessionId: hazard.sessionId,
+            roomType: hazard.roomType,
+            hazardType: hazard.hazardType,
+            severity: hazard.severity,
+            reason: hazard.reason,
+            priority: hazard.priority,
+            evidenceImagePath: hazard.evidenceImagePath,
+          },
+        })
+      ),
+      ...result.recommendations.map((rec) =>
+        prisma.recommendation.create({
+          data: {
+            id: rec.id,
+            sessionId: rec.sessionId,
+            finalHazardId: rec.finalHazardId,
+            fixType: rec.fixType,
+            title: rec.title,
+            description: rec.description,
+            priority: rec.priority,
+            estimatedCostMin: rec.estimatedCostMin,
+            estimatedCostMax: rec.estimatedCostMax,
+            materialsJson: rec.materialsJson,
+            installationComplexity: rec.installationComplexity,
+          },
+        })
+      ),
     ]);
+  }
 
-    for (const hazard of result.finalHazards) {
-      await prisma.finalHazard.create({
-        data: {
-          id: hazard.id,
-          sessionId: hazard.sessionId,
-          roomType: hazard.roomType,
-          hazardType: hazard.hazardType,
-          severity: hazard.severity,
-          reason: hazard.reason,
-          priority: hazard.priority,
-          evidenceImagePath: hazard.evidenceImagePath,
-        },
-      });
-    }
-    for (const rec of result.recommendations) {
-      await prisma.recommendation.create({
-        data: {
-          id: rec.id,
-          sessionId: rec.sessionId,
-          finalHazardId: rec.finalHazardId,
-          fixType: rec.fixType,
-          title: rec.title,
-          description: rec.description,
-          priority: rec.priority,
-          estimatedCostMin: rec.estimatedCostMin,
-          estimatedCostMax: rec.estimatedCostMax,
-          materialsJson: rec.materialsJson,
-          installationComplexity: rec.installationComplexity,
-        },
-      });
-    }
+  async findRecentContractorLead(userId: string, zip: string): Promise<{ id: string } | null> {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const lead = await prisma.contractorLead.findFirst({
+      where: { userId, zip, createdAt: { gte: oneHourAgo } },
+      select: { id: true },
+    });
+    return lead;
+  }
+
+  async saveContractorLead(input: {
+    userId: string;
+    name: string;
+    email: string;
+    zip: string;
+    phone?: string;
+    scopeSummary: string;
+  }): Promise<{ id: string }> {
+    const lead = await prisma.contractorLead.create({ data: input });
+    return { id: lead.id };
   }
 
   async saveReport(report: ReportPayload, userId?: string): Promise<void> {
     if (!userId) return;
-    const existing = await prisma.reportSnapshot.findFirst({
-      where: { sessionId: report.sessionId, userId },
-    });
-    if (existing) {
-      await prisma.reportSnapshot.update({
-        where: { id: existing.id },
-        data: { reportJson: report as unknown as object },
-      });
-      return;
-    }
-    await prisma.reportSnapshot.create({
-      data: {
+    await prisma.reportSnapshot.upsert({
+      where: { sessionId_userId: { sessionId: report.sessionId, userId } },
+      update: { reportJson: report as unknown as object },
+      create: {
         sessionId: report.sessionId,
         userId,
         reportJson: report as unknown as object,
@@ -520,20 +532,33 @@ export class PostgresDatabase {
     };
   }
 
-  async listReportsForUser(userId: string): Promise<Array<{ sessionId: string; createdAt: string; reportJson: unknown }>> {
-    const reports = await prisma.reportSnapshot.findMany({
+  async listReportsForUser(
+    userId: string,
+    pagination: { limit: number; cursor?: string } = { limit: 20 }
+  ): Promise<{ reports: Array<{ sessionId: string; createdAt: string; reportJson: unknown }>; nextCursor: string | null }> {
+    const rows = await prisma.reportSnapshot.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
+      take: pagination.limit + 1,
+      ...(pagination.cursor ? { cursor: { id: pagination.cursor }, skip: 1 } : {}),
     });
-    return reports.map((report) => ({
-      sessionId: report.sessionId,
-      createdAt: report.createdAt.toISOString(),
-      reportJson: report.reportJson,
-    }));
+    const hasMore = rows.length > pagination.limit;
+    const page = hasMore ? rows.slice(0, pagination.limit) : rows;
+    return {
+      reports: page.map((report) => ({
+        sessionId: report.sessionId,
+        createdAt: report.createdAt.toISOString(),
+        reportJson: report.reportJson,
+      })),
+      nextCursor: hasMore ? page[page.length - 1].id : null,
+    };
   }
 
-  async listSessionsForUser(userId: string): Promise<
-    Array<{
+  async listSessionsForUser(
+    userId: string,
+    pagination: { limit: number; cursor?: string } = { limit: 20 }
+  ): Promise<{
+    sessions: Array<{
       id: string;
       startedAt: string;
       createdAt: string;
@@ -542,23 +567,31 @@ export class PostgresDatabase {
       currentRoom?: string;
       overallRiskLevel?: string;
       reportAvailable: boolean;
-    }>
-  > {
-    const sessions = await prisma.inspectionSession.findMany({
+    }>;
+    nextCursor: string | null;
+  }> {
+    const rows = await prisma.inspectionSession.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
+      take: pagination.limit + 1,
+      ...(pagination.cursor ? { cursor: { id: pagination.cursor }, skip: 1 } : {}),
       include: { reportSnapshots: { select: { id: true } } },
     });
-    return sessions.map((session) => ({
-      id: session.id,
-      startedAt: session.startedAt.toISOString(),
-      createdAt: session.createdAt.toISOString(),
-      status: session.status,
-      city: session.city ?? undefined,
-      currentRoom: session.currentRoom ?? undefined,
-      overallRiskLevel: session.overallRiskLevel ?? undefined,
-      reportAvailable: session.reportSnapshots.length > 0,
-    }));
+    const hasMore = rows.length > pagination.limit;
+    const page = hasMore ? rows.slice(0, pagination.limit) : rows;
+    return {
+      sessions: page.map((session) => ({
+        id: session.id,
+        startedAt: session.startedAt.toISOString(),
+        createdAt: session.createdAt.toISOString(),
+        status: session.status,
+        city: session.city ?? undefined,
+        currentRoom: session.currentRoom ?? undefined,
+        overallRiskLevel: session.overallRiskLevel ?? undefined,
+        reportAvailable: session.reportSnapshots.length > 0,
+      })),
+      nextCursor: hasMore ? page[page.length - 1].id : null,
+    };
   }
 
   async cleanupAuthRecords(retentionHours: number): Promise<{

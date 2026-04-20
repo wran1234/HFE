@@ -14,12 +14,13 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  homes           Home[]
-  sessions        InspectionSession[]
-  authSessions    AuthSession[]
-  loginTokens     EmailLoginToken[]
-  reportSnapshots ReportSnapshot[]
-  evidenceAssets  EvidenceAsset[]
+  homes             Home[]
+  sessions          InspectionSession[]
+  authSessions      AuthSession[]
+  loginTokens       EmailLoginToken[]
+  reportSnapshots   ReportSnapshot[]
+  evidenceAssets    EvidenceAsset[]
+  contractorLeads   ContractorLead[]
 }
 
 model AuthSession {
@@ -181,6 +182,21 @@ model ReportSnapshot {
 
   session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+}
+
+model ContractorLead {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  email        String
+  zip          String
+  phone        String?
+  scopeSummary String
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model EvidenceAsset {

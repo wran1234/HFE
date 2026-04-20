@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 import { AuthenticatedRequestUser } from "../domain/types";
 
 export const AUTH_COOKIE_NAME = "hfe_session";

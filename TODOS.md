@@ -85,3 +85,19 @@ Each item has a rationale, effort estimate, and priority.
 **Context:** `client/src/components/PremiumSection.tsx`, `ShoppingList.tsx`, `ContractorScope.tsx`. Architecture doc has "Extension Path" section describing subsidyEngine and contractorMatchService as post-assessment enrichments.
 
 **Effort:** M (human: 1 week / CC: 1 hr for affiliate links) | **Priority:** P1 | **Depends on:** Hardening pass ships first.
+
+---
+
+## TODO-6: Shareable report + family sharing loop
+
+**What:** After a report is generated, let the user share it via a link. Non-owners can view the report without logging in (or with a lightweight invite flow). Add pre-written share text for family forwarding.
+
+**Why:** The adult child who does the walkthrough often wants their siblings to see the report. The sibling who receives it is the next user. Turns one assessment into a family event with a built-in acquisition loop.
+
+**Pros:** Viral coefficient — one assessment potentially generates 2-4 new users. Report quality already earns sharing.
+
+**Cons:** Requires auth changes (read-only report access for non-owners). Shareable tokens need expiry logic.
+
+**Context:** Approach C from the /office-hours design doc (2026-04-19). The report endpoint at `GET /api/sessions/:id/report` is currently auth-gated. A shareable token approach would add a `/api/reports/shared/:token` endpoint. See `/plan-ceo-review` CEO plan at `~/.gstack/projects/HFE/ceo-plans/2026-04-19-revenue-hardening.md`.
+
+**Effort:** M (human: 3-4 days / CC: ~2 hrs) | **Priority:** P2 | **Depends on:** Revenue layer (TODO-5) ships first.

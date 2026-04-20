@@ -1,6 +1,17 @@
 import { Redis } from "@upstash/redis";
 import { RateLimitDecision, RateLimitProvider } from "./rateLimit";
 
+// Atomic INCR + PEXPIRE (only on first increment) + PTTL via Lua.
+// Returns [count, ttlMs] where ttlMs is -1 if the key has no TTL (shouldn't happen).
+const RATE_LIMIT_LUA = `
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('PTTL', KEYS[1])
+return {current, ttl}
+`;
+
 export class UpstashRateLimitProvider implements RateLimitProvider {
   private redis: Redis;
 
@@ -13,15 +24,19 @@ export class UpstashRateLimitProvider implements RateLimitProvider {
     windowMs: number;
     maxRequests: number;
   }): Promise<RateLimitDecision> {
-    const count = await this.redis.incr(params.key);
-    if (count === 1) {
-      await this.redis.pexpire(params.key, params.windowMs);
-    }
-    const ttlMs = await this.redis.pttl(params.key);
+    const result = await this.redis.eval(
+      RATE_LIMIT_LUA,
+      [params.key],
+      [String(params.windowMs)]
+    ) as [number, number];
+
+    const count = result[0];
+    const ttlMs = result[1];
+
     if (count > params.maxRequests) {
       return {
         allowed: false,
-        retryAfterSec: Math.max(1, Math.ceil((Number(ttlMs) || params.windowMs) / 1000)),
+        retryAfterSec: Math.max(1, Math.ceil((ttlMs > 0 ? ttlMs : params.windowMs) / 1000)),
       };
     }
     return { allowed: true, retryAfterSec: 0 };

@@ -709,7 +709,11 @@ export default function ReportPage() {
           )}
 
           {/* Premium */}
-          {activeTab === "premium" && <PremiumSection />}
+          {activeTab === "premium" && (
+            <PremiumSection
+              onScrollToContractor={() => setActiveTab("contractor")}
+            />
+          )}
         </div>
       </div>
     </div>

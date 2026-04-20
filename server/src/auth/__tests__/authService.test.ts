@@ -1,6 +1,6 @@
 import { AuthService } from "../authService";
 
-jest.mock("../../data/inMemoryDatabase", () => ({
+jest.mock("../../data/repository", () => ({
   db: {
     verifyAndConsumeLoginToken: jest.fn(),
     findUserByEmail: jest.fn(),
@@ -10,12 +10,15 @@ jest.mock("../../data/inMemoryDatabase", () => ({
   },
 }));
 
-import { db } from "../../data/inMemoryDatabase";
+import { db } from "../../data/repository";
 
 const mockedDb = db as jest.Mocked<typeof db>;
 
 describe("AuthService", () => {
-  const emailSender = { sendLoginCode: jest.fn().mockResolvedValue(undefined) };
+  const emailSender = {
+    sendLoginCode: jest.fn().mockResolvedValue(undefined),
+    sendContractorLeadNotification: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new AuthService(emailSender);
 
   beforeEach(() => {

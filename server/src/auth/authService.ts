@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 import { EmailSender } from "./emailSender";
 
 const CODE_TTL_MINUTES = 10;
@@ -12,6 +12,10 @@ const hashToken = (value: string): string =>
 
 export class AuthService {
   constructor(private emailSender: EmailSender) {}
+
+  getEmailSender(): EmailSender {
+    return this.emailSender;
+  }
 
   async register(email: string, name?: string): Promise<void> {
     const normalized = email.trim().toLowerCase();

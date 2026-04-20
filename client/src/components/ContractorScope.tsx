@@ -1,6 +1,7 @@
 import { HazardObservation } from "../lib/types";
-import { Hammer, Zap, Wrench, User, Copy, Check } from "lucide-react";
+import { Hammer, Zap, Wrench, User, Copy, Check, Send, CheckCircle } from "lucide-react";
 import { useState } from "react";
+import { apiFetch } from "../lib/apiClient";
 
 const TRADE_CONFIG: Record<string, { label: string; icon: React.ElementType; color: string; bg: string; description: string }> = {
   "general-contractor": {
@@ -39,6 +40,11 @@ interface ContractorScopeProps {
 
 export default function ContractorScope({ observations }: ContractorScopeProps) {
   const [copied, setCopied] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: "", email: "", phone: "", zip: "" });
 
   const proJobs = observations.filter((o) => !o.isDIY && o.trade);
 
@@ -74,6 +80,29 @@ export default function ContractorScope({ observations }: ContractorScopeProps) 
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      await apiFetch("/api/leads/contractor", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name.trim(),
+          email: form.email.trim(),
+          phone: form.phone.trim() || undefined,
+          zip: form.zip.trim(),
+          scopeSummary: generateScopeText(),
+        }),
+      });
+      setSubmitted(true);
+    } catch {
+      setFormError("Unable to submit right now. Please copy the scope and email it to us.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (proJobs.length === 0) {
@@ -161,6 +190,111 @@ export default function ContractorScope({ observations }: ContractorScopeProps) 
           <span className="text-warm-700 font-medium">How to use this scope:</span> Copy this document and share it with contractors when requesting quotes. Ask each contractor to provide itemized pricing for each line item. Get at least 3 quotes for any job over $500.
         </p>
       </div>
+
+      {/* Contractor matching CTA */}
+      {!submitted ? (
+        <div className="bg-blue-50 border border-blue-200 rounded-2xl p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="font-semibold text-blue-800 mb-1">Get matched with local contractors</h3>
+              <p className="text-sm text-blue-600">
+                We'll send your scope to pre-vetted aging-in-place certified contractors in your area and follow up within 1–2 business days.
+              </p>
+            </div>
+            {!showForm && (
+              <button
+                onClick={() => setShowForm(true)}
+                className="shrink-0 inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white text-sm font-medium px-4 py-2 rounded-xl transition-colors"
+              >
+                <Send className="w-3.5 h-3.5" />
+                Request Matches
+              </button>
+            )}
+          </div>
+
+          {showForm && (
+            <form onSubmit={handleSubmit} className="mt-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-blue-800 mb-1">Full name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    className="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    placeholder="Jane Smith"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-blue-800 mb-1">Zip code *</label>
+                  <input
+                    type="text"
+                    required
+                    pattern="\d{5}(-\d{4})?"
+                    value={form.zip}
+                    onChange={(e) => setForm({ ...form, zip: e.target.value })}
+                    className="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    placeholder="94103"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-blue-800 mb-1">Email *</label>
+                  <input
+                    type="email"
+                    required
+                    value={form.email}
+                    onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    className="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    placeholder="you@example.com"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-blue-800 mb-1">Phone (optional)</label>
+                  <input
+                    type="tel"
+                    value={form.phone}
+                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    className="w-full text-sm border border-blue-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    placeholder="(555) 555-5555"
+                  />
+                </div>
+              </div>
+              {formError && (
+                <p className="text-xs text-red-600">{formError}</p>
+              )}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded-xl transition-colors"
+                >
+                  {submitting ? "Sending…" : "Send My Scope"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="text-sm text-blue-600 hover:text-blue-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      ) : (
+        <div className="bg-green-50 border border-green-200 rounded-2xl p-6 flex items-start gap-4">
+          <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold text-green-800">Request received!</p>
+            <p className="text-sm text-green-700 mt-1">
+              We'll follow up within 1–2 business days with contractor matches in your area. Check your email for a copy of your scope.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

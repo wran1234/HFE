@@ -1,4 +1,4 @@
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 import { AssessmentResult, ReportPayload } from "../domain/types";
 
 export function buildReportPayload(assessment: AssessmentResult): ReportPayload {
