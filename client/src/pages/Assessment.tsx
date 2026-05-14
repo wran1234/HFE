@@ -344,7 +344,7 @@ export default function AssessmentPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <ShieldCheck className="w-5 h-5 text-brand-600" />
+              <ShieldCheck aria-hidden="true" className="w-5 h-5 text-brand-600" />
               <h1 className="text-2xl font-bold text-warm-900">Photo Safety Assessment</h1>
             </div>
             <p className="text-sm text-warm-500">
@@ -391,7 +391,7 @@ export default function AssessmentPage() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-semibold text-warm-900">{ROOM_NAMES[room]}</span>
-                      {done === prompts.length && <CheckCircle className="w-4 h-4 text-green-600" />}
+                      {done === prompts.length && <CheckCircle aria-hidden="true" className="w-4 h-4 text-green-600" />}
                     </div>
                     <p className="text-xs text-warm-500 mt-1">{done}/{prompts.length} photos</p>
                   </button>
@@ -420,15 +420,16 @@ export default function AssessmentPage() {
                   <div className="grid md:grid-cols-[1fr_220px] gap-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
-                        <Camera className="w-4 h-4 text-brand-600" />
+                        <Camera aria-hidden="true" className="w-4 h-4 text-brand-600" />
                         <h3 className="font-semibold text-warm-900">{prompt.title}</h3>
                       </div>
-                      <p className="text-sm text-warm-500 mb-4">{prompt.detail}</p>
+                      <p className="text-sm text-warm-600 mb-4">{prompt.detail}</p>
                       <div className="flex flex-wrap gap-2">
                         {prompt.concerns.map((concern) => (
                           <button
                             key={concern.hazardType}
                             type="button"
+                            aria-pressed={selected.includes(concern.hazardType)}
                             onClick={() => toggleConcern(key, concern.hazardType)}
                             className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
                               selected.includes(concern.hazardType)
@@ -440,24 +441,27 @@ export default function AssessmentPage() {
                           </button>
                         ))}
                       </div>
-                      <p className="text-xs text-warm-400 mt-3">Optional: tap anything you already notice. The photo will still be reviewed even if you leave these blank.</p>
+                      <p className="text-xs text-warm-600 mt-3">Optional: tap anything you already notice. The photo will still be reviewed even if you leave these blank.</p>
                     </div>
-                    <label className={`flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-colors ${
-                      uploaded ? "border-green-300 bg-green-50" : "border-warm-300 bg-warm-50 hover:bg-warm-100"
-                    }`}>
+                    <label
+                      aria-label={uploaded ? `${prompt.title} — photo saved. Click to replace.` : `Upload photo for ${prompt.title}`}
+                      className={`flex min-h-36 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-colors ${
+                        uploaded ? "border-green-300 bg-green-50" : "border-warm-300 bg-warm-50 hover:bg-warm-100"
+                      }`}
+                    >
                       <input type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void handlePhoto(activeRoom, prompt, event)} />
                       {busyKey === key ? (
-                        <Loader2 className="w-7 h-7 animate-spin text-brand-600" />
+                        <Loader2 aria-hidden="true" className="w-7 h-7 animate-spin text-brand-600" />
                       ) : uploaded ? (
                         <>
-                          <CheckCircle className="w-7 h-7 text-green-600" />
+                          <CheckCircle aria-hidden="true" className="w-7 h-7 text-green-600" />
                           <span className="mt-2 text-sm font-semibold text-green-800">Photo saved</span>
                         </>
                       ) : (
                         <>
-                          <ImagePlus className="w-7 h-7 text-brand-600" />
+                          <ImagePlus aria-hidden="true" className="w-7 h-7 text-brand-600" />
                           <span className="mt-2 text-sm font-semibold text-warm-800">Upload photo</span>
-                          <span className="mt-1 text-xs text-warm-500">Camera or library</span>
+                          <span className="mt-1 text-xs text-warm-600">Camera or library</span>
                         </>
                       )}
                     </label>
@@ -466,7 +470,7 @@ export default function AssessmentPage() {
               );
             })}
 
-            {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+            {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
 
             <div className="flex flex-wrap justify-between gap-3 rounded-2xl border border-warm-200 bg-white p-5 shadow-sm">
               <button type="button" onClick={() => void skipRoom(activeRoom)} className="btn-secondary py-2 px-3 text-sm">
@@ -484,15 +488,15 @@ export default function AssessmentPage() {
                   disabled={finalizing || !privacyConsent || uploadedCount === 0}
                   className="btn-primary py-2 px-4 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {finalizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-                  Generate prevention report
+                  {finalizing ? <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" /> : <FileText aria-hidden="true" className="w-4 h-4" />}
+                  {finalizing ? "Generating report..." : "Generate prevention report"}
                 </button>
               </div>
             </div>
 
             <div className="rounded-2xl border border-brand-100 bg-brand-50 p-4 text-sm text-brand-900">
               <div className="flex items-start gap-2">
-                <UploadCloud className="w-4 h-4 mt-0.5" />
+                <UploadCloud aria-hidden="true" className="w-4 h-4 mt-0.5" />
                 <p>
                   Photo assessment is designed for families and care partners who need a calmer flow than live video. Photos are used for prevention support and care coordination documentation, not diagnosis or guaranteed outcome claims.
                 </p>

@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, CheckCircle } from "lucide-react";
+import { FormEvent, useState } from "react";
+import { ArrowRight, CheckCircle, Mail } from "lucide-react";
+import { joinBetaWaitlist } from "../lib/apiClient";
 
 const STATS = [
   { value: "3M+",  label: "Older adults treated for fall injuries every year in the US" },
@@ -11,18 +13,18 @@ const STATS = [
 const STEPS = [
   {
     num: "1",
-    title: "Walk & Show",
-    desc: "Walk through your home while your camera streams live to Gemini AI. Show each room, staircase, bathroom, and entry.",
+    title: "Take Guided Photos",
+    desc: "Capture a few key views of bathrooms, walking paths, stairs, entries, and nighttime routes.",
   },
   {
     num: "2",
-    title: "Real-Time Analysis",
-    desc: "The AI instantly identifies hazards as you walk — tracking every concern with location, risk level, and severity.",
+    title: "Review Visible Concerns",
+    desc: "Flag practical issues like poor lighting, loose rugs, missing grab bars, or unsafe stairs while photos are saved as documentation.",
   },
   {
     num: "3",
-    title: "Get Your Report",
-    desc: "Receive a prioritized, room-by-room safety plan with specific product recommendations and action steps.",
+    title: "Get Your Prevention Plan",
+    desc: "Receive a prioritized aging-at-home plan with family actions, service requests, and partner-ready prevention documentation.",
   },
 ];
 
@@ -103,6 +105,117 @@ const TRUST_ITEMS = [
   "No app download needed",
 ];
 
+function BetaWaitlistForm({ variant = "light" }: { variant?: "light" | "dark" }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const [zipCode, setZipCode] = useState("");
+  const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [message, setMessage] = useState("");
+  const dark = variant === "dark";
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setStatus("submitting");
+    setMessage("");
+    try {
+      const result = await joinBetaWaitlist({
+        email,
+        name: name || undefined,
+        role: role || undefined,
+        zipCode: zipCode || undefined,
+        source: "home",
+      });
+      setStatus("success");
+      setMessage(result.alreadyJoined
+        ? "You are already on the beta list. We will keep you posted."
+        : "You are on the beta list. We will email you when HFE ships.");
+      setEmail("");
+      setName("");
+      setRole("");
+      setZipCode("");
+    } catch (err) {
+      setStatus("error");
+      setMessage(err instanceof Error ? err.message : "Unable to join the beta list right now.");
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className={`w-full rounded-2xl border p-4 shadow-sm ${dark ? "border-white/20 bg-white/10 backdrop-blur" : "border-warm-200 bg-white"}`}>
+      <div className="flex items-center gap-2 mb-3">
+        <Mail aria-hidden="true" className={`w-4 h-4 ${dark ? "text-brand-200" : "text-brand-600"}`} />
+        <p className={`text-sm font-semibold ${dark ? "text-white" : "text-warm-900"}`}>Join the beta list</p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div>
+          <label htmlFor={`beta-email-${variant}`} className="sr-only">Email address</label>
+          <input
+            id={`beta-email-${variant}`}
+            type="email"
+            required
+            aria-required="true"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="Email address"
+            className="w-full min-h-11 rounded-xl border border-warm-200 bg-white px-3 text-sm text-warm-900 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          />
+        </div>
+        <div>
+          <label htmlFor={`beta-zip-${variant}`} className="sr-only">ZIP code</label>
+          <input
+            id={`beta-zip-${variant}`}
+            type="text"
+            value={zipCode}
+            onChange={(event) => setZipCode(event.target.value)}
+            placeholder="ZIP code"
+            inputMode="numeric"
+            className="w-full min-h-11 rounded-xl border border-warm-200 bg-white px-3 text-sm text-warm-900 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          />
+        </div>
+        <div>
+          <label htmlFor={`beta-name-${variant}`} className="sr-only">Name</label>
+          <input
+            id={`beta-name-${variant}`}
+            type="text"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Name"
+            className="w-full min-h-11 rounded-xl border border-warm-200 bg-white px-3 text-sm text-warm-900 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          />
+        </div>
+        <div>
+          <label htmlFor={`beta-role-${variant}`} className="sr-only">I am…</label>
+          <select
+            id={`beta-role-${variant}`}
+            value={role}
+            onChange={(event) => setRole(event.target.value)}
+            className="w-full min-h-11 rounded-xl border border-warm-200 bg-white px-3 text-sm text-warm-900 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+          >
+            <option value="">I am...</option>
+            <option value="family_caregiver">Family caregiver</option>
+            <option value="older_adult">Older adult</option>
+            <option value="care_professional">Care professional</option>
+            <option value="contractor">Contractor</option>
+          </select>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-3">
+        <button type="submit" disabled={status === "submitting"} className="btn-primary justify-center min-h-11 rounded-xl disabled:opacity-60">
+          {status === "submitting" ? "Joining..." : "Notify me"}
+        </button>
+        <p className={`text-xs leading-relaxed ${dark ? "text-white/70" : "text-warm-500"}`}>
+          We will only use this to send beta access and launch updates.
+        </p>
+      </div>
+      {message && (
+        <p role={status === "error" ? "alert" : "status"} className={`mt-3 text-sm ${status === "error" ? "text-red-600" : dark ? "text-brand-100" : "text-brand-700"}`}>
+          {message}
+        </p>
+      )}
+    </form>
+  );
+}
+
 export default function HomePage() {
   return (
     <div className="animate-fade-in">
@@ -111,6 +224,8 @@ export default function HomePage() {
       <section className="relative overflow-hidden min-h-[600px] flex items-end">
         {/* Full-bleed photo: elderly woman laughing with adult daughter */}
         <div
+          role="img"
+          aria-label="Elderly woman laughing with adult daughter"
           className="absolute inset-0"
           style={{
             background:
@@ -128,13 +243,13 @@ export default function HomePage() {
             <br />at every age
           </h1>
           <p className="text-white/75 text-lg md:text-xl leading-relaxed max-w-lg mb-9 font-light">
-            Walk through any room with your phone. Our AI identifies fall hazards
-            in real time and delivers a personalized safety plan in minutes.
+            Take guided photos of key rooms. HFE helps identify practical
+            prevention steps and delivers a personalized safety plan in minutes.
           </p>
           <div className="flex flex-wrap gap-3">
             <Link to="/onboarding" className="btn-primary text-base px-8 py-4 rounded-xl">
               Start Free Assessment
-              <ArrowRight className="w-5 h-5" />
+              <ArrowRight aria-hidden="true" className="w-5 h-5" />
             </Link>
             <a
               href="#how-it-works"
@@ -142,6 +257,9 @@ export default function HomePage() {
             >
               See how it works
             </a>
+          </div>
+          <div className="mt-8 max-w-2xl">
+            <BetaWaitlistForm variant="dark" />
           </div>
         </div>
       </section>
@@ -170,7 +288,7 @@ export default function HomePage() {
           <div className="flex flex-wrap items-center justify-center gap-x-10 gap-y-3">
             {TRUST_ITEMS.map((item) => (
               <div key={item} className="flex items-center gap-2 text-sage-600 text-sm font-medium">
-                <CheckCircle className="w-4 h-4 text-sage-400 shrink-0" />
+                <CheckCircle aria-hidden="true" className="w-4 h-4 text-sage-400 shrink-0" />
                 {item}
               </div>
             ))}
@@ -192,7 +310,7 @@ export default function HomePage() {
                 <em className="italic text-brand-600">safer</em> home
               </h2>
               <p className="text-warm-600 text-lg leading-relaxed mb-10 max-w-md">
-                A 15-minute guided walkthrough is all it takes. No equipment,
+                A 15-minute guided photo assessment is all it takes. No equipment,
                 no appointment, no expertise needed.
               </p>
               <div className="space-y-8">
@@ -212,14 +330,16 @@ export default function HomePage() {
               </div>
               <div className="mt-10">
                 <Link to="/onboarding" className="btn-primary">
-                  Begin Your Walkthrough
-                  <ArrowRight className="w-4 h-4" />
+                  Begin Photo Assessment
+                  <ArrowRight aria-hidden="true" className="w-4 h-4" />
                 </Link>
               </div>
             </div>
 
             {/* Right: photo — caregiver + senior reviewing report on laptop */}
             <div
+              role="img"
+              aria-label="Caregiver and senior reviewing a safety report on a laptop"
               className="rounded-2xl overflow-hidden shadow-2xl shadow-warm-900/10 aspect-[4/5] w-full"
               style={{
                 backgroundImage:
@@ -246,7 +366,7 @@ export default function HomePage() {
               </h2>
             </div>
             <p className="text-warm-600 text-base leading-relaxed max-w-sm md:text-right">
-              Our AI detects all of these in real time during your walkthrough.
+              HFE helps organize these visible concerns into practical prevention steps.
             </p>
           </div>
 
@@ -266,7 +386,7 @@ export default function HomePage() {
                   {hazard.description}
                 </p>
                 <div className="flex items-start gap-2 bg-sage-100 rounded-lg px-3 py-2.5">
-                  <CheckCircle className="w-4 h-4 text-sage-500 shrink-0 mt-0.5" />
+                  <CheckCircle aria-hidden="true" className="w-4 h-4 text-sage-500 shrink-0 mt-0.5" />
                   <p className="text-xs text-sage-700 font-medium leading-relaxed">{hazard.fix}</p>
                 </div>
               </div>
@@ -315,13 +435,13 @@ export default function HomePage() {
             <em className="italic text-brand-600">love most</em>
           </h2>
           <p className="text-warm-600 text-lg leading-relaxed mb-10 max-w-xl mx-auto">
-            A 15-minute walkthrough can identify the changes needed to prevent
-            life-changing injuries. It&apos;s free, thorough, and built for real families.
+            A 15-minute photo assessment can identify practical changes that support
+            safer aging at home. It&apos;s free, thorough, and built for real families.
           </p>
           <div className="flex flex-wrap gap-3 justify-center">
             <Link to="/onboarding" className="btn-primary text-base px-8 py-4 rounded-xl">
               Start Free Assessment
-              <ArrowRight className="w-5 h-5" />
+              <ArrowRight aria-hidden="true" className="w-5 h-5" />
             </Link>
             <a
               href="#hazards"
@@ -329,6 +449,9 @@ export default function HomePage() {
             >
               Learn About Hazards
             </a>
+          </div>
+          <div className="mt-10 max-w-2xl mx-auto text-left">
+            <BetaWaitlistForm />
           </div>
         </div>
       </section>

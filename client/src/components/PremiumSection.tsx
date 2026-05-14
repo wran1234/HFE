@@ -62,8 +62,9 @@ function SubsidyChecker() {
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-green-800 mb-1">State</label>
+              <label htmlFor="subsidy-state" className="block text-xs font-medium text-green-800 mb-1">State</label>
               <select
+                id="subsidy-state"
                 value={state}
                 onChange={(e) => setState(e.target.value)}
                 className="w-full text-sm border border-green-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-400"
@@ -73,8 +74,9 @@ function SubsidyChecker() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-green-800 mb-1">Age of resident</label>
+              <label htmlFor="subsidy-age" className="block text-xs font-medium text-green-800 mb-1">Age of resident</label>
               <input
+                id="subsidy-age"
                 type="number"
                 min="18"
                 max="110"
@@ -100,7 +102,7 @@ function SubsidyChecker() {
             className="inline-flex items-center gap-2 bg-green-700 hover:bg-green-800 disabled:opacity-40 text-white text-sm font-medium px-5 py-2 rounded-xl transition-colors"
           >
             Check My Eligibility
-            <ArrowRight className="w-3.5 h-3.5" />
+            <ArrowRight aria-hidden="true" className="w-3.5 h-3.5" />
           </button>
         </div>
       ) : (
@@ -120,7 +122,7 @@ function SubsidyChecker() {
                 <p className="text-sm font-medium text-green-800 group-hover:text-green-900">{prog.name}</p>
                 <p className="text-xs text-warm-500 mt-0.5">{prog.description}</p>
               </div>
-              <ExternalLink className="w-3.5 h-3.5 text-green-400 shrink-0 mt-0.5" />
+              <ExternalLink aria-hidden="true" className="w-3.5 h-3.5 text-green-400 shrink-0 mt-0.5" />
             </a>
           ))}
           <button
@@ -152,7 +154,7 @@ const PREMIUM_SERVICES: PremiumService[] = [
     id: "contractor",
     icon: Building2,
     title: "Connect with Local Contractors",
-    description: "Get matched with pre-vetted aging-in-place certified contractors in your area. Licensed, insured, and experienced with senior home modifications.",
+    description: "Find nearby contractors for your prevention scope, then verify license, insurance, reviews, and references before hiring.",
     cta: "Find Contractors Near Me",
     badge: "Free Matching",
     color: "text-blue-700",
@@ -217,6 +219,7 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
 
   const handleAction = (service: PremiumService) => {
     if (service.action === "contractor") {
+      window.location.hash = "contractor-lead-form";
       onScrollToContractor?.();
     } else if (service.action === "reassess") {
       navigate("/");
@@ -229,7 +232,7 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
     <div className="space-y-4">
       <div className="text-center pb-2">
         <div className="inline-flex items-center gap-2 bg-brand-50 border border-brand-200 text-brand-700 text-sm font-medium px-4 py-2 rounded-full mb-3">
-          <Star className="w-3.5 h-3.5" />
+          <Star aria-hidden="true" className="w-3.5 h-3.5" />
           Next Steps
         </div>
         <p className="text-warm-500 text-sm max-w-lg mx-auto">
@@ -247,7 +250,7 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
             <div key={service.id} className={`border rounded-2xl shadow-sm overflow-hidden ${service.bg}`}>
               <div className="p-5">
                 <div className="flex items-start gap-4">
-                  <Icon className={`w-5 h-5 mt-0.5 shrink-0 ${service.color}`} />
+                  <Icon aria-hidden="true" className={`w-5 h-5 mt-0.5 shrink-0 ${service.color}`} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <h3 className={`text-sm font-semibold ${service.color}`}>{service.title}</h3>
@@ -265,14 +268,16 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
                     className={`inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-xl transition-colors bg-white/70 hover:bg-white border border-white/80 ${service.color}`}
                   >
                     {service.cta}
-                    <ArrowRight className="w-3.5 h-3.5" />
+                    <ArrowRight aria-hidden="true" className="w-3.5 h-3.5" />
                   </button>
                   {isExpandable && (
                     <button
                       onClick={() => toggle(service.id)}
+                      aria-expanded={isExpanded}
+                      aria-controls={`premium-expand-${service.id}`}
                       className={`text-xs flex items-center gap-1 ${service.color} opacity-70 hover:opacity-100`}
                     >
-                      {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      {isExpanded ? <ChevronUp aria-hidden="true" className="w-3.5 h-3.5" /> : <ChevronDown aria-hidden="true" className="w-3.5 h-3.5" />}
                       {isExpanded ? "Hide" : "Show details"}
                     </button>
                   )}
@@ -281,12 +286,12 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
 
               {/* Expandable content */}
               {isExpanded && service.action === "subsidy" && (
-                <div className="border-t border-green-200 bg-green-50/50 px-5 pb-5">
+                <div id={`premium-expand-${service.id}`} className="border-t border-green-200 bg-green-50/50 px-5 pb-5">
                   <SubsidyChecker />
                 </div>
               )}
               {isExpanded && service.action === "ot" && (
-                <div className="border-t border-pink-200 bg-pink-50/50 px-5 pb-5 pt-4">
+                <div id={`premium-expand-${service.id}`} className="border-t border-pink-200 bg-pink-50/50 px-5 pb-5 pt-4">
                   <p className="text-sm text-warm-600 mb-3">Find a certified occupational therapist in your area:</p>
                   <div className="space-y-2">
                     <a href="https://www.aota.org/practice/consumers/otas-in-your-area" target="_blank" rel="noopener noreferrer" className="flex items-center justify-between p-3 bg-white rounded-xl border border-pink-200 hover:border-pink-400 transition-colors group">
@@ -294,27 +299,27 @@ export default function PremiumSection({ onScrollToContractor }: PremiumSectionP
                         <p className="text-sm font-medium text-pink-800">AOTA OT Locator</p>
                         <p className="text-xs text-warm-500">American Occupational Therapy Association — official OT finder</p>
                       </div>
-                      <ExternalLink className="w-3.5 h-3.5 text-pink-400" />
+                      <ExternalLink aria-hidden="true" className="w-3.5 h-3.5 text-pink-400" />
                     </a>
                     <a href="https://www.homemods.org/resources/find-a-specialist" target="_blank" rel="noopener noreferrer" className="flex items-center justify-between p-3 bg-white rounded-xl border border-pink-200 hover:border-pink-400 transition-colors group">
                       <div>
                         <p className="text-sm font-medium text-pink-800">HomeMods.org Specialist Finder</p>
                         <p className="text-xs text-warm-500">Certified aging-in-place specialists (CAPS) by location</p>
                       </div>
-                      <ExternalLink className="w-3.5 h-3.5 text-pink-400" />
+                      <ExternalLink aria-hidden="true" className="w-3.5 h-3.5 text-pink-400" />
                     </a>
                   </div>
                 </div>
               )}
               {isExpanded && service.action === "3d" && (
-                <div className="border-t border-purple-200 bg-purple-50/50 px-5 pb-5 pt-4">
+                <div id={`premium-expand-${service.id}`} className="border-t border-purple-200 bg-purple-50/50 px-5 pb-5 pt-4">
                   <p className="text-sm text-warm-600 mb-3">Find a Certified Aging-in-Place Specialist (CAPS) designer:</p>
                   <a href="https://www.nahb.org/nahb-community/designations-and-certifications/caps" target="_blank" rel="noopener noreferrer" className="flex items-center justify-between p-3 bg-white rounded-xl border border-purple-200 hover:border-purple-400 transition-colors group">
                     <div>
                       <p className="text-sm font-medium text-purple-800">NAHB CAPS Designer Directory</p>
                       <p className="text-xs text-warm-500">National Association of Home Builders — certified aging-in-place designers</p>
                     </div>
-                    <ExternalLink className="w-3.5 h-3.5 text-purple-400" />
+                    <ExternalLink aria-hidden="true" className="w-3.5 h-3.5 text-purple-400" />
                   </a>
                 </div>
               )}
