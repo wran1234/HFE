@@ -6,6 +6,13 @@ const CODE_TTL_MINUTES = 10;
 const SESSION_TTL_DAYS = 14;
 const AUTH_SECRET = process.env.AUTH_SESSION_SECRET || "dev-only-secret";
 const VERIFY_MAX_ATTEMPTS = Number(process.env.AUTH_VERIFY_MAX_ATTEMPTS || 5);
+// Parsed once at startup; avoids re-splitting the env var on every login verification.
+const ADMIN_EMAIL_SET: ReadonlySet<string> = new Set(
+  (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 const hashToken = (value: string): string =>
   crypto.createHash("sha256").update(`${value}:${AUTH_SECRET}`).digest("hex");
@@ -35,7 +42,7 @@ export class AuthService {
     console.info(`[AUTH] login code issued for ${normalized}`);
   }
 
-  async verifyLogin(email: string, code: string): Promise<{ token: string; expiresAt: string; user: { id: string; email: string; name?: string } }> {
+  async verifyLogin(email: string, code: string): Promise<{ token: string; expiresAt: string; user: { id: string; email: string; name?: string; role: "user" | "admin" } }> {
     const normalized = email.trim().toLowerCase();
     const consumed = await db.verifyAndConsumeLoginToken({
       email: normalized,
@@ -47,8 +54,12 @@ export class AuthService {
       throw new Error("Invalid or expired code.");
     }
 
-    const user = await db.findUserByEmail(consumed.email);
+    let user = await db.findUserByEmail(consumed.email);
     if (!user) throw new Error("User not found after verification.");
+    const desiredRole = ADMIN_EMAIL_SET.has(user.email.toLowerCase()) ? "admin" : user.role;
+    if (desiredRole !== user.role) {
+      user = await db.setUserRole(user.id, desiredRole);
+    }
 
     const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000);
     const session = await db.createAuthSession(user.id, expiresAt);
@@ -56,7 +67,7 @@ export class AuthService {
     return {
       token: session.token,
       expiresAt: session.expiresAt,
-      user: { id: user.id, email: user.email, name: user.name },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
     };
   }
 }

@@ -7,6 +7,7 @@ jest.mock("../../data/repository", () => ({
     createAuthSession: jest.fn(),
     createLoginToken: jest.fn(),
     createUser: jest.fn(),
+    setUserRole: jest.fn(),
   },
 }));
 
@@ -18,6 +19,7 @@ describe("AuthService", () => {
   const emailSender = {
     sendLoginCode: jest.fn().mockResolvedValue(undefined),
     sendContractorLeadNotification: jest.fn().mockResolvedValue(undefined),
+    sendBetaWaitlistConfirmation: jest.fn().mockResolvedValue(undefined),
   };
   const service = new AuthService(emailSender);
 
@@ -36,6 +38,7 @@ describe("AuthService", () => {
         id: "u1",
         email: "test@example.com",
         name: "Test",
+        role: "user",
         createdAt: new Date().toISOString(),
       });
       mockedDb.createAuthSession.mockResolvedValue({
@@ -46,7 +49,15 @@ describe("AuthService", () => {
       const result = await service.verifyLogin("test@example.com", "123456");
       expect(result.token).toBe("session_token");
       expect(result.user.email).toBe("test@example.com");
+      expect(result.user.role).toBe("user");
+      expect(mockedDb.setUserRole).not.toHaveBeenCalled();
     });
+
+    /**
+     * Admin email promotion is tested via a separate describe block that resets
+     * modules so ADMIN_EMAIL_SET is re-evaluated with the env var pre-set.
+     * (The set is intentionally frozen at module load to avoid per-request parsing.)
+     */
 
     it("throws when code is invalid", async () => {
       mockedDb.verifyAndConsumeLoginToken.mockResolvedValue({ status: "invalid" });
@@ -108,5 +119,74 @@ describe("AuthService", () => {
         expect.any(Date)
       );
     });
+  });
+});
+
+describe("AuthService — admin email promotion", () => {
+  // Reset modules so ADMIN_EMAIL_SET is re-evaluated after we set the env var.
+  let AuthServiceFresh: typeof AuthService;
+  let mockedDbFresh: jest.Mocked<typeof db>;
+
+  beforeAll(() => {
+    jest.resetModules();
+    process.env.ADMIN_EMAILS = "admin@example.com";
+
+    jest.mock("../../data/repository", () => ({
+      db: {
+        verifyAndConsumeLoginToken: jest.fn(),
+        findUserByEmail: jest.fn(),
+        createAuthSession: jest.fn(),
+        createLoginToken: jest.fn(),
+        createUser: jest.fn(),
+        setUserRole: jest.fn(),
+      },
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    AuthServiceFresh = require("../authService").AuthService;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    mockedDbFresh = require("../../data/repository").db as jest.Mocked<typeof db>;
+  });
+
+  afterAll(() => {
+    delete process.env.ADMIN_EMAILS;
+    jest.resetModules();
+  });
+
+  it("promotes configured admin emails on verified login", async () => {
+    const emailSender = {
+      sendLoginCode: jest.fn().mockResolvedValue(undefined),
+      sendContractorLeadNotification: jest.fn().mockResolvedValue(undefined),
+      sendBetaWaitlistConfirmation: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AuthServiceFresh(emailSender);
+
+    mockedDbFresh.verifyAndConsumeLoginToken.mockResolvedValue({
+      status: "verified",
+      userId: "u1",
+      email: "admin@example.com",
+    });
+    mockedDbFresh.findUserByEmail.mockResolvedValue({
+      id: "u1",
+      email: "admin@example.com",
+      name: "Admin",
+      role: "user",
+      createdAt: new Date().toISOString(),
+    });
+    mockedDbFresh.setUserRole.mockResolvedValue({
+      id: "u1",
+      email: "admin@example.com",
+      name: "Admin",
+      role: "admin",
+      createdAt: new Date().toISOString(),
+    });
+    mockedDbFresh.createAuthSession.mockResolvedValue({
+      token: "session_token",
+      expiresAt: new Date(Date.now() + 10000).toISOString(),
+    });
+
+    const result = await service.verifyLogin("admin@example.com", "123456");
+    expect(mockedDbFresh.setUserRole).toHaveBeenCalledWith("u1", "admin");
+    expect(result.user.role).toBe("admin");
   });
 });
