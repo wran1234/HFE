@@ -1062,44 +1062,47 @@ export class PostgresDatabase {
     profileUrl?: string;
     sourceUrl?: string;
   }>): Promise<void> {
-    for (const suggestion of input) {
-      await prisma.contractorSuggestion.upsert({
-        where: {
-          sessionId_trade_zipCode_provider_externalId: {
+    // Run all upserts concurrently instead of sequentially to avoid N+1 round trips.
+    await Promise.all(
+      input.map((suggestion) =>
+        prisma.contractorSuggestion.upsert({
+          where: {
+            sessionId_trade_zipCode_provider_externalId: {
+              sessionId: suggestion.sessionId,
+              trade: suggestion.trade,
+              zipCode: suggestion.zipCode,
+              provider: suggestion.provider,
+              externalId: suggestion.externalId ?? `${suggestion.provider}:${suggestion.trade}:${suggestion.zipCode}:${suggestion.name}`,
+            },
+          },
+          update: {
+            name: suggestion.name,
+            rating: suggestion.rating,
+            reviewCount: suggestion.reviewCount,
+            address: suggestion.address,
+            phone: suggestion.phone,
+            websiteUrl: suggestion.websiteUrl,
+            profileUrl: suggestion.profileUrl,
+            sourceUrl: suggestion.sourceUrl,
+          },
+          create: {
             sessionId: suggestion.sessionId,
             trade: suggestion.trade,
             zipCode: suggestion.zipCode,
             provider: suggestion.provider,
             externalId: suggestion.externalId ?? `${suggestion.provider}:${suggestion.trade}:${suggestion.zipCode}:${suggestion.name}`,
+            name: suggestion.name,
+            rating: suggestion.rating,
+            reviewCount: suggestion.reviewCount,
+            address: suggestion.address,
+            phone: suggestion.phone,
+            websiteUrl: suggestion.websiteUrl,
+            profileUrl: suggestion.profileUrl,
+            sourceUrl: suggestion.sourceUrl,
           },
-        },
-        update: {
-          name: suggestion.name,
-          rating: suggestion.rating,
-          reviewCount: suggestion.reviewCount,
-          address: suggestion.address,
-          phone: suggestion.phone,
-          websiteUrl: suggestion.websiteUrl,
-          profileUrl: suggestion.profileUrl,
-          sourceUrl: suggestion.sourceUrl,
-        },
-        create: {
-          sessionId: suggestion.sessionId,
-          trade: suggestion.trade,
-          zipCode: suggestion.zipCode,
-          provider: suggestion.provider,
-          externalId: suggestion.externalId ?? `${suggestion.provider}:${suggestion.trade}:${suggestion.zipCode}:${suggestion.name}`,
-          name: suggestion.name,
-          rating: suggestion.rating,
-          reviewCount: suggestion.reviewCount,
-          address: suggestion.address,
-          phone: suggestion.phone,
-          websiteUrl: suggestion.websiteUrl,
-          profileUrl: suggestion.profileUrl,
-          sourceUrl: suggestion.sourceUrl,
-        },
-      });
-    }
+        })
+      )
+    );
   }
 
   async saveAffiliateClick(input: {
@@ -2153,7 +2156,10 @@ export class PostgresDatabase {
     if (status === "consent_completed") data.consentCompletedAt = now;
     if (status === "assessment_completed") data.assessmentCompletedAt = now;
     if (status === "report_generated") data.reportGeneratedAt = now;
-    const where = idOrCode.length === 10 ? { referralCode: idOrCode } : { id: idOrCode };
+    // Referral codes are 10-char hex strings; UUIDs are 36 chars.
+    // Use UUID pattern match as a robust discriminator rather than a magic length check.
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrCode);
+    const where = isUuid ? { id: idOrCode } : { referralCode: idOrCode };
     const referral = await prisma.partnerReferral.update({ where, data }).catch(() => null);
     return referral ? this.mapPartnerReferral(referral) : undefined;
   }

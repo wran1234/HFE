@@ -110,9 +110,8 @@ export function createSessionsRouter(
       referralId: optionalString(body.referralId, 120),
       ...consent,
     });
-    for (const roomType of REQUIRED_ROOM_ORDER) {
-      await db.getOrCreateRoomScan(session.id, roomType);
-    }
+    // Create all required room scans concurrently to avoid N+1 DB round trips.
+    await Promise.all(REQUIRED_ROOM_ORDER.map((roomType) => db.getOrCreateRoomScan(session.id, roomType)));
     const seniorProfile = parseSeniorProfile(body.seniorProfile);
     if (seniorProfile) {
       await db.upsertSeniorProfile(session.id, seniorProfile);
@@ -172,6 +171,7 @@ export function createSessionsRouter(
     const session = await db.getSession(req.params.id);
     if (!session) return res.status(404).json({ error: "Session not found." });
     if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
+    if (!VALID_ROOM_TYPES_SET.has(req.params.roomType)) return res.status(400).json({ error: "Invalid roomType." });
     const roomType = req.params.roomType as RoomType;
     const roomScan = await db.getOrCreateRoomScan(session.id, roomType);
     roomScan.capturedViews = req.body.capturedViews ?? roomScan.capturedViews;
