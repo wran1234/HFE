@@ -75,10 +75,15 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<HFEWebSocketClient | null>(null);
+  const wsUnsubRef = useRef<(() => void) | null>(null);
   const frameTimerRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const snapshotsRef = useRef<SnapshotData[]>([]);
   const aiSummaryRef = useRef<string>("");
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioNextTimeRef = useRef(0);
+  const aiAudioEndTimerRef = useRef<number | null>(null);
+  const aiSpeakingRef = useRef(false);
 
   const roomSequence = buildRoomSequence(profile);
   const [roomState, dispatchRoom] = useReducer(roomReducer, {
@@ -97,6 +102,8 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   const [isAiTyping, setIsAiTyping] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [missingViews, setMissingViews] = useState<string[]>([]);
+  const [completionScore, setCompletionScore] = useState(0);
+  const [privacyConsent, setPrivacyConsent] = useState(false);
   const [snapshotFlash, setSnapshotFlash] = useState(false);
   const [isListening, setIsListening] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -113,6 +120,69 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
         timestamp: Date.now(),
       },
     ]);
+  }, []);
+
+  const ensureAudioContext = useCallback(async () => {
+    const AudioContextCtor =
+      window.AudioContext ??
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContextCtor();
+      audioNextTimeRef.current = audioContextRef.current.currentTime;
+    }
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+    return audioContextRef.current;
+  }, []);
+
+  const playAiAudioChunk = useCallback(async (base64Audio: string, mimeType: string) => {
+    const audioContext = await ensureAudioContext();
+    if (!audioContext) return;
+
+    if (aiAudioEndTimerRef.current !== null) {
+      window.clearTimeout(aiAudioEndTimerRef.current);
+      aiAudioEndTimerRef.current = null;
+    }
+    aiSpeakingRef.current = true;
+    speechRef.current?.stop();
+    setIsListening(false);
+
+    const rateMatch = /rate=(\d+)/i.exec(mimeType);
+    const sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
+    const binary = atob(base64Audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const frameCount = Math.floor(bytes.byteLength / 2);
+    if (frameCount <= 0) return;
+    const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
+    const channel = buffer.getChannelData(0);
+    const view = new DataView(bytes.buffer);
+    for (let index = 0; index < frameCount; index += 1) {
+      channel[index] = view.getInt16(index * 2, true) / 32768;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    const startAt = Math.max(audioContext.currentTime + 0.03, audioNextTimeRef.current);
+    source.start(startAt);
+    audioNextTimeRef.current = startAt + buffer.duration;
+  }, [ensureAudioContext]);
+
+  const stopAiAudio = useCallback(() => {
+    if (aiAudioEndTimerRef.current !== null) {
+      window.clearTimeout(aiAudioEndTimerRef.current);
+      aiAudioEndTimerRef.current = null;
+    }
+    aiSpeakingRef.current = false;
+    if (audioContextRef.current) {
+      audioNextTimeRef.current = audioContextRef.current.currentTime;
+    }
   }, []);
 
   useEffect(() => {
@@ -178,17 +248,34 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const startAssessment = async () => {
+    if (!privacyConsent) {
+      addMessage("system", "Please confirm camera and evidence consent before starting.");
+      return;
+    }
+    const consentedProfile: UserProfile = {
+      ...profile,
+      consent: {
+        consentAccepted: true,
+        consentAcceptedAt: profile.consent?.consentAcceptedAt ?? new Date().toISOString(),
+        consentVersion: profile.consent?.consentVersion ?? "parent-safety-consent-v1",
+        recordingPermissionConfirmed: true,
+        shareWithCareCoordinator: Boolean(profile.consent?.shareWithCareCoordinator),
+        shareWithContractor: Boolean(profile.consent?.shareWithContractor),
+        shareWithInsurer: Boolean(profile.consent?.shareWithInsurer),
+      },
+    };
     setStatus("connecting");
     addMessage("system", "Connecting to AI safety expert...");
+    await ensureAudioContext();
 
     const client = new HFEWebSocketClient();
     wsRef.current = client;
 
-    client.onMessage((msg) => {
+    wsUnsubRef.current = client.onMessage((msg) => {
       switch (msg.type) {
         case "connected":
           // Immediately start session with profile
-          client.startSession(profile, roomSequence);
+          client.startSession(consentedProfile, roomSequence);
           break;
 
         case "session_started":
@@ -237,6 +324,14 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           break;
         }
 
+        case "ai_audio_chunk": {
+          void playAiAudioChunk(
+            String(msg.payload.data ?? ""),
+            String(msg.payload.mimeType ?? "audio/pcm;rate=24000")
+          );
+          break;
+        }
+
         case "ai_typing": {
           setIsAiTyping(true);
           break;
@@ -264,6 +359,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
         case "inspection_state":
           setMissingViews((msg.payload.missingViews ?? []) as string[]);
+          setCompletionScore(Number(msg.payload.completionScore ?? 0));
           break;
 
         case "follow_up_prompt": {
@@ -308,6 +404,20 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
         case "turn_complete":
           setIsAiTyping(false);
+          {
+            const audioContext = audioContextRef.current;
+            const delayMs = audioContext
+              ? Math.max(150, (audioNextTimeRef.current - audioContext.currentTime) * 1000 + 200)
+              : 500;
+            if (aiAudioEndTimerRef.current !== null) {
+              window.clearTimeout(aiAudioEndTimerRef.current);
+            }
+            aiAudioEndTimerRef.current = window.setTimeout(() => {
+              aiSpeakingRef.current = false;
+              aiAudioEndTimerRef.current = null;
+              if (speechActiveRef.current) startContinuousSpeech();
+            }, delayMs);
+          }
           break;
 
         case "report_ready": {
@@ -322,6 +432,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
         }
 
         case "error":
+          stopAiAudio();
           if (String(msg.payload.message ?? "") === "Internal server error.") {
             addMessage("system", "Something went wrong. Please end the session and try again.");
           } else {
@@ -350,8 +461,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           ? "Voice input isn't supported on iOS. Type your messages, or use Chrome on Android for hands-free voice."
           : "Voice input not available in this browser. Use Chrome or Edge for hands-free voice.");
       }
-    } catch {
-      addMessage("system", "Failed to connect. Is the server running?");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to connect. Is the server running?";
+      addMessage("system", message);
       setStatus("idle");
     }
   };
@@ -401,9 +513,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     recognition.onerror = () => {
       setIsListening(false);
       // Restart after transient errors (no-speech, audio-capture) if still active
-      if (speechActiveRef.current) {
+      if (speechActiveRef.current && !aiSpeakingRef.current) {
         setTimeout(() => {
-          if (speechActiveRef.current) startContinuousSpeech();
+          if (speechActiveRef.current && !aiSpeakingRef.current) startContinuousSpeech();
         }, 800);
       }
     };
@@ -411,9 +523,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     recognition.onend = () => {
       setIsListening(false);
       // Auto-restart as long as the session is active
-      if (speechActiveRef.current) {
+      if (speechActiveRef.current && !aiSpeakingRef.current) {
         setTimeout(() => {
-          if (speechActiveRef.current) startContinuousSpeech();
+          if (speechActiveRef.current && !aiSpeakingRef.current) startContinuousSpeech();
         }, 300);
       }
     };
@@ -449,16 +561,23 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const generateReport = () => {
+    const allowIncomplete = completionScore < 60
+      ? window.confirm("This assessment is incomplete. The report may miss hazards in rooms or views not captured. Generate it anyway?")
+      : false;
+    if (completionScore < 60 && !allowIncomplete) return;
     setStatus("ending");
     addMessage("system", "Completing assessment and generating your safety report...");
-    wsRef.current?.requestReport();
+    wsRef.current?.requestReport(allowIncomplete);
     setIsAiTyping(true);
   };
 
   const stopAssessment = () => {
     stopSpeech();
+    stopAiAudio();
     stopFrameCapture();
     stopCamera();
+    wsUnsubRef.current?.();
+    wsUnsubRef.current = null;
     wsRef.current?.endSession();
     wsRef.current?.close();
     wsRef.current = null;
@@ -471,8 +590,13 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     return () => {
       speechActiveRef.current = false;
       speechRef.current?.stop();
+      stopAiAudio();
+      void audioContextRef.current?.close();
+      audioContextRef.current = null;
       stopFrameCapture();
       stopCamera();
+      wsUnsubRef.current?.();
+      wsUnsubRef.current = null;
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -593,7 +717,20 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           <div className="card">
             <div className="flex flex-wrap items-center gap-3">
               {status === "idle" && (
-                <button onClick={startAssessment} className="btn-primary">
+                <label className="flex w-full items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={privacyConsent}
+                    onChange={(e) => setPrivacyConsent(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  <span>
+                    I understand this AI-assisted walkthrough uses my camera and may store evidence snapshots for my report. HFE is not a medical, emergency, occupational therapy, or contractor assessment, and I can stop the session at any time.
+                  </span>
+                </label>
+              )}
+              {status === "idle" && (
+                <button onClick={startAssessment} disabled={!privacyConsent} className={`btn-primary ${!privacyConsent ? "opacity-60 cursor-not-allowed" : ""}`}>
                   <Video className="w-4 h-4" />
                   Start Assessment
                 </button>

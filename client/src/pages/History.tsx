@@ -110,7 +110,7 @@ export default function HistoryPage() {
                   </p>
                 </div>
                 {session.reportAvailable ? (
-                  <Link to={`/report?sessionId=${session.id}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
+                  <Link to={`/report?sessionId=${encodeURIComponent(session.id)}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
                     Open report
                   </Link>
                 ) : (
@@ -149,7 +149,7 @@ export default function HistoryPage() {
                     {report.hazardCount !== undefined ? ` · ${report.hazardCount} hazards` : ""}
                   </p>
                 </div>
-                <Link to={`/report?sessionId=${report.sessionId}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
+                <Link to={`/report?sessionId=${encodeURIComponent(report.sessionId)}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
                   View
                 </Link>
               </div>

@@ -1,5 +1,7 @@
+import crypto from "crypto";
 import { RecommendationPriority, HazardType, SeverityLevel } from "../domain/enums";
 import { FinalHazard, Recommendation } from "../domain/types";
+import { estimatePreventionImpact } from "../domain/independenceRisk";
 
 interface RecommendationTemplate {
   fixType: string;
@@ -124,7 +126,7 @@ export function buildRecommendation(sessionId: string, hazard: FinalHazard): Rec
   const template = templates[hazard.hazardType];
   const priority = priorityFromSeverity(hazard.severity);
   return {
-    id: `rec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    id: crypto.randomUUID(),
     sessionId,
     finalHazardId: hazard.id,
     hazardId: hazard.id,
@@ -137,5 +139,11 @@ export function buildRecommendation(sessionId: string, hazard: FinalHazard): Rec
     materials: template.materials,
     materialsJson: template.materials,
     installationComplexity: template.installationComplexity,
+    actionOwner: ["missing_handrail", "unsafe_stairs", "outdoor_step_risk", "narrow_walkway"].includes(hazard.hazardType) ? "contractor" : "family",
+    actionPriority: priority === "critical" ? "immediate" : priority === "high" ? "this_week" : priority === "medium" ? "this_month" : "monitor",
+    estimatedPreventionImpact: estimatePreventionImpact({
+      title: template.title,
+      hazardType: hazard.hazardType,
+    }),
   };
 }
