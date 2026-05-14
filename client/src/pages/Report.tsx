@@ -69,30 +69,8 @@ import { toAssessmentReport } from "../lib/reportTransform";
 import ShoppingList from "../components/ShoppingList";
 import ContractorScope from "../components/ContractorScope";
 import PremiumSection from "../components/PremiumSection";
+import ScoreRing from "../components/ScoreRing";
 import { loadProfile } from "../lib/userProfile";
-
-// ── Score ring ─────────────────────────────────────────────────────────────────
-
-function ScoreRing({ score }: { score: number }) {
-  const radius = 52;
-  const circ = 2 * Math.PI * radius;
-  const offset = circ - (score / 100) * circ;
-  const color = score >= 75 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
-  return (
-    <div className="relative w-32 h-32">
-      <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
-        <circle cx="60" cy="60" r={radius} fill="none" stroke="#EBE5DA" strokeWidth="10" />
-        <circle cx="60" cy="60" r={radius} fill="none" stroke={color} strokeWidth="10"
-          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 1.2s ease" }} />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-extrabold text-warm-900">{score}</span>
-        <span className="text-xs text-warm-500">/100</span>
-      </div>
-    </div>
-  );
-}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -1005,6 +983,7 @@ export default function ReportPage() {
   const navigate = useNavigate();
   const printRef = useRef<HTMLDivElement>(null);
   const [report, setReport] = useState<AssessmentReport | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1022,7 +1001,9 @@ export default function ReportPage() {
         })
         .catch(() => {
           setLoadError("We couldn't load the latest report from the server. Showing your saved local copy if available.");
-        });
+        })
+        .finally(() => setIsLoading(false));
+      return;
     }
 
     // Check for shared report in URL hash
@@ -1031,11 +1012,13 @@ export default function ReportPage() {
       const decoded = decodeReportFromHash(hash.slice(7));
       if (decoded) {
         setReport(decoded);
+        setIsLoading(false);
         return;
       }
     }
     const stored = loadReport();
     if (stored) setReport(stored);
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -1176,6 +1159,51 @@ export default function ReportPage() {
     window.open(`/api/sessions/${encodeURIComponent(report.sessionId)}/prevention-summary.html`, "_blank", "noopener,noreferrer");
     void getPreventionSummary(report.sessionId).catch(() => undefined);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-warm-50 px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-5xl mx-auto space-y-6">
+          {/* Header skeleton */}
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
+            <div className="space-y-2">
+              <div className="h-8 w-80 bg-gray-200 animate-pulse rounded-lg" />
+              <div className="h-4 w-56 bg-gray-200 animate-pulse rounded" />
+            </div>
+            <div className="flex gap-2">
+              <div className="h-9 w-28 bg-gray-200 animate-pulse rounded-xl" />
+              <div className="h-9 w-24 bg-gray-200 animate-pulse rounded-xl" />
+            </div>
+          </div>
+
+          {/* Score ring + stats card skeleton */}
+          <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+            <div className="flex flex-wrap items-center gap-8">
+              <div className="w-32 h-32 rounded-full bg-gray-200 animate-pulse" />
+              <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-4">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <div className="h-3 w-20 bg-gray-200 animate-pulse rounded" />
+                    <div className="h-6 w-16 bg-gray-200 animate-pulse rounded" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Card outlines skeleton */}
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm space-y-3">
+              <div className="h-5 w-40 bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-full bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-5/6 bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-3/4 bg-gray-200 animate-pulse rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   if (!report) {
     return (

@@ -1,4 +1,28 @@
 import { useEffect, useRef, useState, useCallback, useReducer } from "react";
+
+// ── SpeechRecognition types ───────────────────────────────────────────────────
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: Event) => void) | null;
+  onend: (() => void) | null;
+}
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  }
+}
 import {
   Video,
   VideoOff,
@@ -106,8 +130,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   const [privacyConsent, setPrivacyConsent] = useState(false);
   const [snapshotFlash, setSnapshotFlash] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const speechRef = useRef<any>(null);
+  const speechRef = useRef<SpeechRecognition | null>(null);
   const speechActiveRef = useRef(false); // true when we WANT recognition running
 
   const addMessage = useCallback((role: ChatMessage["role"], text: string) => {
@@ -451,8 +474,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
       startFrameCapture();
       dispatchRoom({ type: "RESET", firstRoom: roomSequence[0] ?? "entryway" });
       // Auto-start voice input — seamless conversation from the start
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
       if (SR && !isIOS) {
         startContinuousSpeech();
@@ -478,8 +500,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const startContinuousSpeech = useCallback(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SR) return;
 
     speechActiveRef.current = true;
@@ -491,8 +512,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
     recognition.onstart = () => setIsListening(true);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       const transcript = (event.results[0]?.[0]?.transcript ?? "").trim();
       if (transcript) {
         // Direct call — don't go through textInput state
@@ -550,8 +570,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     if (speechActiveRef.current) {
       stopSpeech();
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
       if (!SR) {
         addMessage("system", "Speech recognition not supported. Use Chrome or Edge.");
         return;

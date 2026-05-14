@@ -71,7 +71,47 @@ export default function HistoryPage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-warm-500">Loading history...</div>;
+    return (
+      <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {/* Header skeleton */}
+        <div className="flex items-center justify-between">
+          <div className="h-8 w-48 bg-gray-200 animate-pulse rounded-lg" />
+          <div className="h-9 w-40 bg-gray-200 animate-pulse rounded-xl" />
+        </div>
+
+        {/* Sessions card skeleton */}
+        <div className="bg-white border border-warm-200 rounded-2xl p-6">
+          <div className="h-5 w-24 bg-gray-200 animate-pulse rounded mb-4" />
+          <div className="space-y-2">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="p-3 bg-warm-50 rounded-lg border border-warm-200 flex items-center justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-4 w-32 bg-gray-200 animate-pulse rounded" />
+                  <div className="h-3 w-56 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="h-4 w-20 bg-gray-200 animate-pulse rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Reports card skeleton */}
+        <div className="bg-white border border-warm-200 rounded-2xl p-6">
+          <div className="h-5 w-20 bg-gray-200 animate-pulse rounded mb-4" />
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="p-3 bg-warm-50 rounded-lg border border-warm-200 flex items-center justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-4 w-28 bg-gray-200 animate-pulse rounded" />
+                  <div className="h-3 w-44 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="h-4 w-12 bg-gray-200 animate-pulse rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error) {
