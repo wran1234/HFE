@@ -7,6 +7,7 @@ export type ServerMessageType =
   | "status"
   | "ai_message"
   | "ai_message_chunk"
+  | "ai_audio_chunk"
   | "ai_typing"
   | "observation"
   | "room_change"
@@ -31,27 +32,50 @@ export class HFEWebSocketClient {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const protocol = window.location.protocol === "https:" ? "wss" : "ws";
       const url = `${protocol}://${window.location.host}/ws`;
 
       this.ws = new WebSocket(url);
 
-      this.ws.onopen = () => resolve();
+      const settleReady = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      const settleError = (error: Error) => {
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      };
 
       this.ws.onmessage = (event) => {
         try {
           const msg: ServerMessage = JSON.parse(event.data as string);
           this.handlers.forEach((h) => h(msg));
+          if (msg.type === "session_started" || msg.type === "session_resumed") {
+            settleReady();
+          }
+          if (msg.type === "error" && !settled) {
+            settleError(new Error(String(msg.payload.message ?? "WebSocket session failed")));
+          }
         } catch (err) {
           console.error("Failed to parse WS message:", err);
+          settleError(new Error("Failed to parse server websocket message"));
         }
       };
 
-      this.ws.onerror = () => reject(new Error("WebSocket connection failed"));
+      this.ws.onerror = () => settleError(new Error("WebSocket connection failed"));
 
       this.ws.onclose = () => {
+        settleError(new Error("WebSocket closed before the AI session started"));
+        // After the session has started, surface disconnection as an error so
+        // VideoAssistant resets its status and shows a visible error message.
         this.handlers.forEach((h) =>
-          h({ type: "status", payload: { message: "Disconnected from server." } })
+          h({ type: "error", payload: { message: "Disconnected from server. Please end the session and try again." } })
         );
       };
     });
@@ -89,8 +113,8 @@ export class HFEWebSocketClient {
     this.send("text_message", { text });
   }
 
-  requestReport() {
-    this.send("request_report");
+  requestReport(allowIncomplete = false) {
+    this.send("request_report", { allowIncomplete });
   }
 
   endSession() {
