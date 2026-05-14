@@ -259,6 +259,13 @@ export function createSessionsRouter(
     const session = await db.getSession(req.params.id);
     if (!session) return res.status(404).json({ error: "Session not found." });
     if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
+    // Guard against concurrent or duplicate finalize calls.
+    if (session.status === "finalizing" || session.status === "completed") {
+      return res.status(409).json({
+        error: "Session is already being finalized or has been completed.",
+        code: "ALREADY_FINALIZED",
+      });
+    }
     if (!session.consentAccepted || !session.recordingPermissionConfirmed) {
       return res.status(409).json({
         error: "Consent and recording permission must be confirmed before generating a prevention report.",
@@ -272,22 +279,34 @@ export function createSessionsRouter(
         code: "INCOMPLETE_ASSESSMENT",
       });
     }
+    // Mark as finalizing immediately to prevent concurrent duplicate finalize calls.
+    session.status = "finalizing";
+    await db.updateSession(session);
     const assessment = await runAssessmentEngine(session);
     session.status = "completed";
     session.endedAt = new Date().toISOString();
     session.overallRiskLevel = assessment.overallRiskLevel;
     await db.updateSession(session);
     if (session.referralId) {
-      await db.updatePartnerReferralStatus(session.referralId, "assessment_completed");
+      await db.updatePartnerReferralStatus(session.referralId, "assessment_completed").catch((err) => {
+        console.warn("[FINALIZE] referral status update (assessment_completed) failed for session", session.id, String(err));
+      });
     }
     const seniorProfile = await db.getSeniorProfile(session.id);
     const report = buildReportPayload(assessment, seniorProfile);
     const assessmentReview = await db.getAssessmentReview(session.id);
     report.assessmentReview = assessmentReview;
     report.consent = consentStateFromSession(session);
-    await persistReportPayload(report, req.authUser!.id);
-    if (session.referralId) {
-      await db.updatePartnerReferralStatus(session.referralId, "report_generated");
+    try {
+      await persistReportPayload(report, req.authUser!.id);
+      if (session.referralId) {
+        await db.updatePartnerReferralStatus(session.referralId, "report_generated").catch((err) => {
+          console.warn("[FINALIZE] referral status update (report_generated) failed for session", session.id, String(err));
+        });
+      }
+    } catch (err) {
+      console.error("[FINALIZE] report persist failed for session", session.id, String(err));
+      // Still return the assessment; report will not appear in History.
     }
     const resolved = await resolveReportEvidenceUrls(report, storage);
     return res.json({ assessment, report: resolved });

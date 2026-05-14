@@ -294,6 +294,11 @@ export class SessionOrchestrator {
       this.send("error", { message: "Consent and recording permission must be confirmed before generating a prevention report." });
       throw new Error("CONSENT_REQUIRED");
     }
+    // Guard against concurrent or duplicate finalize calls on the same orchestrator.
+    if (this.session.status === "finalizing" || this.session.status === "completed") {
+      this.send("error", { message: "Session is already being finalized or has been completed." });
+      throw new Error("ALREADY_FINALIZED");
+    }
     this.session.status = "finalizing";
     this.session.endedAt = new Date().toISOString();
     await db.updateSession(this.session);
@@ -303,7 +308,9 @@ export class SessionOrchestrator {
     this.session.overallRiskLevel = assessment.overallRiskLevel;
     await db.updateSession(this.session);
     if (this.session.referralId) {
-      await db.updatePartnerReferralStatus(this.session.referralId, "assessment_completed");
+      await db.updatePartnerReferralStatus(this.session.referralId, "assessment_completed").catch((err) => {
+        console.warn("[FINALIZE] referral status update (assessment_completed) failed for session", this.session.id, String(err));
+      });
     }
 
     const seniorProfile = await db.getSeniorProfile(this.session.id);
@@ -321,7 +328,9 @@ export class SessionOrchestrator {
     try {
       await persistReportPayload(report, this.session.userId);
       if (this.session.referralId) {
-        await db.updatePartnerReferralStatus(this.session.referralId, "report_generated");
+        await db.updatePartnerReferralStatus(this.session.referralId, "report_generated").catch((err) => {
+          console.warn("[FINALIZE] referral status update (report_generated) failed for session", this.session.id, String(err));
+        });
       }
     } catch (err) {
       console.error("[REPORT] persist failed for session", this.session.id, String(err));
