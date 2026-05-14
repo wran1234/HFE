@@ -2003,6 +2003,7 @@ export class PostgresDatabase {
       orderBy: { createdAt: "desc" },
       take: pagination.limit + 1,
       ...(pagination.cursor ? { cursor: { id: pagination.cursor }, skip: 1 } : {}),
+      select: { id: true, sessionId: true, createdAt: true, reportJson: true },
     });
     const hasMore = rows.length > pagination.limit;
     const page = hasMore ? rows.slice(0, pagination.limit) : rows;
@@ -2037,7 +2038,16 @@ export class PostgresDatabase {
       orderBy: { createdAt: "desc" },
       take: pagination.limit + 1,
       ...(pagination.cursor ? { cursor: { id: pagination.cursor }, skip: 1 } : {}),
-      include: { reportSnapshots: { select: { id: true } } },
+      select: {
+        id: true,
+        startedAt: true,
+        createdAt: true,
+        status: true,
+        city: true,
+        currentRoom: true,
+        overallRiskLevel: true,
+        reportSnapshots: { select: { id: true } },
+      },
     });
     const hasMore = rows.length > pagination.limit;
     const page = hasMore ? rows.slice(0, pagination.limit) : rows;
@@ -2061,7 +2071,12 @@ export class PostgresDatabase {
       where: { pilotCohortId: null },
       orderBy: { createdAt: "desc" },
       take: limit,
-      include: { seniorProfile: true },
+      select: {
+        id: true,
+        createdAt: true,
+        overallRiskLevel: true,
+        seniorProfile: { select: { seniorName: true } },
+      },
     });
     return rows.map((session, index) => ({
       id: session.id,
