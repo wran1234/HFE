@@ -17,6 +17,10 @@ export default defineConfig({
       "/health": {
         target: "http://localhost:8080",
       },
+      "/evidence": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
     },
   },
   build: {

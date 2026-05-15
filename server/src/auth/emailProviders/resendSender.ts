@@ -51,4 +51,15 @@ export class ResendEmailSender implements EmailSender {
       console.error("[EMAIL] contractor lead auto-reply failed:", String(err));
     }
   }
+
+  async sendBetaWaitlistConfirmation(params: { email: string; name?: string }): Promise<void> {
+    const safeName = this.escapeHtml(params.name?.trim() || "there");
+    await this.resend.emails.send({
+      from: this.from,
+      to: params.email,
+      subject: "You're on the HFE beta list",
+      text: `Hi ${params.name?.trim() || "there"},\n\nThanks for joining the HFE beta list. We'll email you when early access is ready.\n\nHFE provides AI-assisted home safety guidance for families and caregivers. It is not medical advice, emergency advice, or a substitute for a licensed professional assessment.\n\n— The HFE Team`,
+      html: `<p>Hi ${safeName},</p><p>Thanks for joining the HFE beta list. We'll email you when early access is ready.</p><p>HFE provides AI-assisted home safety guidance for families and caregivers. It is not medical advice, emergency advice, or a substitute for a licensed professional assessment.</p><p>— The HFE Team</p>`,
+    });
+  }
 }

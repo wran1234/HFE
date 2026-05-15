@@ -10,6 +10,7 @@ export interface ContractorLeadParams {
 export interface EmailSender {
   sendLoginCode(params: { email: string; code: string }): Promise<void>;
   sendContractorLeadNotification(params: ContractorLeadParams): Promise<void>;
+  sendBetaWaitlistConfirmation(params: { email: string; name?: string }): Promise<void>;
 }
 
 export class ConsoleEmailSender implements EmailSender {
@@ -21,5 +22,9 @@ export class ConsoleEmailSender implements EmailSender {
   async sendContractorLeadNotification(params: ContractorLeadParams): Promise<void> {
     console.log(`[EMAIL_CONTRACTOR_LEAD] name=${params.name} email=${params.email} zip=${params.zip} phone=${params.phone ?? "n/a"}`);
     console.log(`[EMAIL_CONTRACTOR_LEAD] scope=${params.scopeSummary.slice(0, 120)}...`);
+  }
+
+  async sendBetaWaitlistConfirmation(params: { email: string; name?: string }): Promise<void> {
+    console.log(`[EMAIL_BETA_WAITLIST] email=${params.email} name=${params.name ?? "n/a"}`);
   }
 }

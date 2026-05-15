@@ -47,10 +47,10 @@ after`;
     expect(result).toEqual([]);
   });
 
-  it("defaults unknown hazardType to clutter_trip_hazard", () => {
+  it("discards unknown hazardType values", () => {
     const modelText = `<<HAZARD_JSON>>{"hazardType":"unknown_type","hazard":"high risk","risk":"risk","recommendation":"fix"}<</HAZARD_JSON>>`;
     const result = extractHazardsFromModelResponse({ ...baseInput, modelText });
-    expect(result[0].hazardType).toBe("clutter_trip_hazard");
+    expect(result).toEqual([]);
   });
 
   it("maps severity words to expected severity", () => {

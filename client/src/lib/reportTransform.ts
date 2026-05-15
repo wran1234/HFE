@@ -1,4 +1,17 @@
-import { AssessmentReport, HazardObservation, RoomId, UserProfile } from "./types";
+import {
+  AssessmentReport,
+  FamilyDashboard,
+  HazardObservation,
+  IndependencePlanItem,
+  IndependenceRiskScore,
+  MemorySupportChecklist,
+  PreventionSummary,
+  RoomId,
+  SeniorProfile,
+  UserProfile,
+  ConsentState,
+  AssessmentReview,
+} from "./types";
 
 interface BackendFinalHazard {
   id: string;
@@ -29,6 +42,14 @@ interface BackendReport {
     hazards: BackendFinalHazard[];
   }>;
   recommendations: BackendRecommendation[];
+  seniorProfile?: SeniorProfile;
+  independenceRiskScore?: IndependenceRiskScore;
+  independencePlan?: IndependencePlanItem[];
+  familyDashboard?: FamilyDashboard;
+  memorySupportChecklist?: MemorySupportChecklist;
+  preventionSummary?: PreventionSummary;
+  consent?: ConsentState;
+  assessmentReview?: AssessmentReview;
 }
 
 const HAZARD_TO_CATEGORY: Record<string, string> = {
@@ -89,6 +110,13 @@ const urgencyFromPriority = (
   return "recommended";
 };
 
+const evidenceUrlFromPath = (path?: string): string | undefined => {
+  if (!path) return undefined;
+  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("/")) return path;
+  if (path.startsWith("evidence/")) return `/${path}`;
+  return `/evidence/${path}`;
+};
+
 export function toAssessmentReport(
   backendReport: BackendReport,
   profile: UserProfile
@@ -104,6 +132,7 @@ export function toAssessmentReport(
       return {
         id: hazard.id,
         room: room.roomType,
+        hazardType: hazard.hazardType,
         category: HAZARD_TO_CATEGORY[hazard.hazardType] ?? "General",
         location: room.roomType.replace(/_/g, " "),
         hazard: hazard.reason,
@@ -120,7 +149,7 @@ export function toAssessmentReport(
         trade: HAZARD_TO_TRADE[hazard.hazardType] ?? "handyman",
         priority: hazard.priority === "critical" ? "high" : hazard.priority,
         timestamp: Date.now(),
-        evidenceImageUrl: hazard.evidenceImagePath,
+        evidenceImageUrl: evidenceUrlFromPath(hazard.evidenceImagePath),
       };
     })
   );
@@ -132,5 +161,13 @@ export function toAssessmentReport(
     snapshots: [],
     aiSummary: backendReport.overallRiskSummary.summary,
     generatedAt: Date.now(),
+    seniorProfile: backendReport.seniorProfile,
+    independenceRiskScore: backendReport.independenceRiskScore,
+    independencePlan: backendReport.independencePlan,
+    familyDashboard: backendReport.familyDashboard,
+    memorySupportChecklist: backendReport.memorySupportChecklist,
+    preventionSummary: backendReport.preventionSummary,
+    consent: backendReport.consent ?? profile.consent,
+    assessmentReview: backendReport.assessmentReview,
   };
 }

@@ -1,4 +1,5 @@
-import { GoogleGenAI, Session, LiveServerMessage, Content, Modality } from "@google/genai";
+import { GoogleGenAI, Session, LiveServerMessage, Modality } from "@google/genai";
+import { GEMINI_LIVE_API_VERSION } from "./liveConfig";
 
 interface ConversationTurn {
   role: "user" | "model";
@@ -23,12 +24,16 @@ export class GeminiLiveClient {
   private pendingReject: ((err: Error) => void) | null = null;
   private accumulatedText = "";
   private onChunkCallback: ((chunk: string) => void) | null = null;
+  private onAudioCallback: ((chunk: { data: string; mimeType: string }) => void) | null = null;
 
   // Serial turn queue — prevents overlapping turns from corrupting pending state
   private turnQueue: Promise<void> = Promise.resolve();
 
   constructor(apiKey: string) {
-    this.ai = new GoogleGenAI({ apiKey });
+    this.ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: { apiVersion: GEMINI_LIVE_API_VERSION },
+    });
   }
 
   private handleMessage(message: LiveServerMessage): void {
@@ -42,7 +47,19 @@ export class GeminiLiveClient {
           this.accumulatedText += text;
           this.onChunkCallback?.(text);
         }
+        const inlineData = (part as { inlineData?: { data?: string; mimeType?: string } }).inlineData;
+        if (inlineData?.data && inlineData.mimeType?.startsWith("audio/")) {
+          this.onAudioCallback?.({
+            data: inlineData.data,
+            mimeType: inlineData.mimeType,
+          });
+        }
       }
+    }
+    const outputTranscript = content.outputTranscription?.text ?? "";
+    if (outputTranscript) {
+      this.accumulatedText += outputTranscript;
+      this.onChunkCallback?.(outputTranscript);
     }
 
     if (content.turnComplete) {
@@ -52,6 +69,7 @@ export class GeminiLiveClient {
       this.pendingReject = null;
       this.accumulatedText = "";
       this.onChunkCallback = null;
+      this.onAudioCallback = null;
       resolve?.(text);
     }
   }
@@ -64,7 +82,8 @@ export class GeminiLiveClient {
       model,
       config: {
         systemInstruction: { parts: [{ text: systemInstruction }] },
-        responseModalities: [Modality.TEXT],
+        responseModalities: [Modality.AUDIO],
+        outputAudioTranscription: {},
       },
       callbacks: {
         onopen: () => {/* connection ready */},
@@ -75,10 +94,11 @@ export class GeminiLiveClient {
           this.pendingReject = null;
           this.accumulatedText = "";
           this.onChunkCallback = null;
-          reject?.(new Error(`Gemini Live error: ${(e as { message?: string }).message ?? "unknown"}`));
+          this.onAudioCallback = null;
+          reject?.(new Error(`Gemini Live connection error: ${this.describeLiveEvent(e)}`));
           this.session = null;
         },
-        onclose: () => {
+        onclose: (e) => {
           this.session = null;
           const reject = this.pendingReject;
           if (reject) {
@@ -86,11 +106,24 @@ export class GeminiLiveClient {
             this.pendingReject = null;
             this.accumulatedText = "";
             this.onChunkCallback = null;
-            reject(new Error("Gemini Live connection closed unexpectedly"));
+            this.onAudioCallback = null;
+            reject(new Error(`Gemini Live connection closed unexpectedly: ${this.describeLiveEvent(e)}`));
           }
         },
       },
     });
+  }
+
+  private describeLiveEvent(event: unknown): string {
+    if (!event) return "unknown";
+    if (event instanceof Error) return event.message;
+    const detail = event as { message?: string; reason?: string; code?: number; error?: unknown };
+    if (detail.message) return detail.message;
+    if (detail.reason) return detail.reason;
+    if (detail.code) return `close code ${detail.code}`;
+    if (detail.error instanceof Error) return detail.error.message;
+    if (typeof detail.error === "string") return detail.error;
+    return "unknown";
   }
 
   private async ensureConnected(model: string, systemInstruction: string): Promise<void> {
@@ -108,14 +141,8 @@ export class GeminiLiveClient {
 
     await this.openSession(model, systemInstruction);
 
-    // Prime the new session with existing history so the model has context
-    if (this.history.length > 0) {
-      const historyTurns: Content[] = this.history.map((t) => ({
-        role: t.role,
-        parts: t.parts.map((p) => ({ text: p.text })),
-      }));
-      this.session!.sendClientContent({ turns: historyTurns, turnComplete: false });
-    }
+    // Gemini 3.1 Live accepts sendClientContent only for configured initial
+    // history seeding. Normal turns must use sendRealtimeInput.
   }
 
   async sendTurn(params: {
@@ -124,6 +151,7 @@ export class GeminiLiveClient {
     userText: string;
     latestFrame?: string;
     onChunk?: (chunk: string) => void;
+    onAudio?: (chunk: { data: string; mimeType: string }) => void;
   }): Promise<GeminiTurnResponse> {
     const parts: Array<{ text?: string; inlineData?: { data: string; mimeType: string } }> = [];
     if (params.latestFrame) {
@@ -138,14 +166,19 @@ export class GeminiLiveClient {
 
     this.accumulatedText = "";
     this.onChunkCallback = params.onChunk ?? null;
+    this.onAudioCallback = params.onAudio ?? null;
 
     const fullText = await new Promise<string>((resolve, reject) => {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
-      this.session!.sendClientContent({
-        turns: [{ role: "user", parts }],
-        turnComplete: true,
-      });
+      for (const part of parts) {
+        if (part.inlineData) {
+          this.session!.sendRealtimeInput({ video: part.inlineData });
+        }
+        if (part.text) {
+          this.session!.sendRealtimeInput({ text: part.text });
+        }
+      }
     });
 
     // Track history (store user turn stripped of image data, then model turn)
@@ -168,6 +201,7 @@ export class GeminiLiveClient {
     this.pendingReject = null;
     this.accumulatedText = "";
     this.onChunkCallback = null;
+    this.onAudioCallback = null;
     if (this.session) {
       this.session.close();
       this.session = null;

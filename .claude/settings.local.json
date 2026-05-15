@@ -39,7 +39,11 @@
       "Bash(npm test *)",
       "Bash(curl -s http://localhost:8080/api/auth/me)",
       "Bash(curl -s http://localhost:8080/health)",
-      "Skill(qa)"
+      "Skill(qa)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Read(//Users/williamran/.claude/**)",
+      "Read(//Users/williamran/.claude/agents/**)",
+      "Bash(./setup)"
     ]
   }
 }

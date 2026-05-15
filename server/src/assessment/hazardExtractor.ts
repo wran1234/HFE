@@ -55,8 +55,17 @@ export function extractHazardsFromModelResponse(input: ExtractHazardsInput): Omi
         risk?: string;
         recommendation?: string;
       };
-      const normalizedType = hazardAlias[parsed.hazardType ?? ""] ?? "clutter_trip_hazard";
+      const normalizedType = hazardAlias[parsed.hazardType ?? ""];
+      if (!normalizedType) {
+        console.warn("[HAZARD] unknown hazardType skipped", {
+          sessionId: input.sessionId,
+          roomType: input.roomType,
+          hazardType: parsed.hazardType,
+        });
+        continue;
+      }
       const note = [parsed.hazard, parsed.risk, parsed.recommendation].filter(Boolean).join(" ").trim();
+      if (!note) continue;
       hazards.push({
         sessionId: input.sessionId,
         roomScanId: input.roomScanId,
@@ -64,7 +73,7 @@ export function extractHazardsFromModelResponse(input: ExtractHazardsInput): Omi
         hazardType: normalizedType,
         severityHint: normalizeSeverity(note),
         evidenceImagePath: input.evidenceImagePath,
-        modelNote: note || "Hazard flagged from Gemini Live output.",
+        modelNote: note.slice(0, 1200),
         followUpNeeded: note.length < 40,
         status: "candidate",
       });

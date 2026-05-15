@@ -1,6 +1,7 @@
 export interface AuthUser {
   id: string;
   email: string;
+  role: "user" | "admin";
 }
 
 export async function register(email: string, name?: string): Promise<void> {
@@ -46,5 +47,8 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 }
 
 export async function logout(): Promise<void> {
-  await fetch("/api/auth/logout", { method: "POST" });
+  await fetch("/api/auth/logout", {
+    method: "POST",
+    headers: { "x-hfe-csrf": "same-origin" },
+  });
 }

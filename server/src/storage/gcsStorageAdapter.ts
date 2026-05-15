@@ -46,11 +46,16 @@ export class GcsStorageAdapter implements StorageAdapter {
     }
 
     const file = this.storage.bucket(this.bucketName).file(storageKey);
-    const [url] = await file.getSignedUrl({
-      action: "read",
-      expires: Date.now() + this.signedUrlTtlSeconds * 1000,
-      version: "v4",
-    });
-    return url;
+    try {
+      const [url] = await file.getSignedUrl({
+        action: "read",
+        expires: Date.now() + this.signedUrlTtlSeconds * 1000,
+        version: "v4",
+      });
+      return url;
+    } catch (error) {
+      console.warn("[STORAGE] evidence signed_url_failed", { storageKey, error: String(error) });
+      return storageKey;
+    }
   }
 }
