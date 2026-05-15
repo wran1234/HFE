@@ -176,20 +176,20 @@ function HazardCard({ obs }: { obs: HazardObservation }) {
 
       <div className="grid sm:grid-cols-2 gap-4 mb-3">
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">HAZARD</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">What we noticed</p>
           <p className="text-sm text-warm-900 leading-relaxed">{obs.hazard}</p>
         </div>
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">WHY IT'S DANGEROUS</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">Why this matters</p>
           <p className="text-sm text-warm-700 leading-relaxed">{obs.risk}</p>
         </div>
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">RECOMMENDATION</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">What to do</p>
           <p className="text-sm text-warm-700 leading-relaxed">{obs.recommendation}</p>
         </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-warm-400">Fall Probability</span>
+            <span className="text-xs text-warm-400">Risk without action</span>
             <span className="text-sm font-bold text-red-600">{obs.fallProbability}%</span>
           </div>
           <div className="w-full bg-warm-200 rounded-full h-1.5">
@@ -302,8 +302,8 @@ function EvidencePanel({
               className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
             >
               <option value="note">General note</option>
-              <option value="before_photo">Before note/photo TODO</option>
-              <option value="after_photo">After note/photo TODO</option>
+              <option value="before_photo">Before photo / note</option>
+              <option value="after_photo">After photo / note</option>
               <option value="contractor_update">Contractor update</option>
               <option value="caregiver_update">Caregiver update</option>
               <option value="other">Other</option>
@@ -360,7 +360,7 @@ function PlanItemCard({
   onEvidenceAdded: (id: string) => void;
 }) {
   return (
-    <div className="p-4 bg-white border border-warm-200 rounded-xl">
+    <div className="p-4 bg-warm-50 border border-warm-200 rounded-xl">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
         <div>
           <p className="text-sm font-semibold text-warm-900">{item.title}</p>
@@ -1228,7 +1228,7 @@ export default function ReportPage() {
   const medObs = obs.filter((o) => o.priority === "medium");
   const lowObs = obs.filter((o) => o.priority === "low");
   const scoreLabel =
-    score >= 80 ? "Good" : score >= 60 ? "Needs Improvement" : "Unsafe — Act Now";
+    score >= 80 ? "Good" : score >= 60 ? "Needs Improvement" : "Action Needed — Let's Fix This";
   const scoreColor =
     score >= 80 ? "text-green-600" : score >= 60 ? "text-amber-600" : "text-red-600";
 
@@ -1320,7 +1320,7 @@ export default function ReportPage() {
         )}
 
         <div className="bg-white border border-warm-200 rounded-xl p-3 mb-5 text-xs text-warm-600">
-          HFE provides AI-assisted risk support, prevention planning, and care coordination. It is not medical advice, not a diagnosis, and not a substitute for licensed medical, occupational therapy, emergency, or contractor assessment. Confirm consent before recording another person or private living space.
+          Your report is powered by AI analysis and is intended as a practical guide for families — not a medical diagnosis or substitute for a professional assessment. If you assess someone else's home, make sure they know and agree. For emergencies, call 911.
           <span className="block mt-2 font-semibold text-warm-800">
             {report.assessmentReview?.reviewStatus === "reviewed"
               ? "Reviewed by care coordinator"
@@ -1328,7 +1328,7 @@ export default function ReportPage() {
                 ? "Needs follow-up review by a care coordinator"
                 : report.assessmentReview?.reviewStatus === "rejected"
                   ? "Assessment review rejected; verify before sharing"
-                  : "AI-generated prevention support; not yet reviewed by a care coordinator."}
+                  : "AI-powered analysis — not yet reviewed by a care coordinator."}
           </span>
         </div>
 

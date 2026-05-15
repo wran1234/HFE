@@ -50,7 +50,7 @@ const HAZARDS = [
     bg: "bg-sage-100",
     title: "Bathroom Hazards",
     description:
-      "The bathroom is the most dangerous room for elderly individuals — wet surfaces, high tubs, and lack of support bars create life-threatening conditions.",
+      "Bathrooms are where most in-home falls happen. Wet floors, high tub walls, and missing grab bars are the top causes — and among the easiest to fix.",
     fix: "Grab bars alone reduce bathroom falls by 45%",
   },
   {

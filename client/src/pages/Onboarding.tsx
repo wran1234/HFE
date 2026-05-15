@@ -15,6 +15,7 @@ import {
   Check,
   Phone,
   Brain,
+  HeartHandshake,
 } from "lucide-react";
 import { UserProfile, HouseType, MobilityLevel } from "../lib/types";
 import { buildSeniorProfile, loadReferralContext, saveProfile } from "../lib/userProfile";
@@ -224,10 +225,10 @@ function Step3({ profile, setProfile }: StepProps) {
           ))}
         </div>
         {(profile.fallHistoryCount ?? 0) >= 3 && (
-          <div className="flex items-start gap-2 mt-3 p-3 bg-red-50 border border-red-200 rounded-xl">
-            <AlertTriangle aria-hidden="true" className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <p className="text-xs text-red-700">
-              Multiple falls indicate very high risk. This assessment will prioritize urgent interventions.
+          <div className="flex items-start gap-2 mt-3 p-3 bg-amber-50 border border-amber-200 rounded-xl">
+            <HeartHandshake aria-hidden="true" className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-800">
+              We'll factor this into your report's priority order. You're doing the most important thing you can do right now.
             </p>
           </div>
         )}

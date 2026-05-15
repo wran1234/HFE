@@ -57,7 +57,7 @@ export default function LoginPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-warm-900 mb-1.5 font-display">Sign in to HFE</h1>
           <p className="text-warm-500 text-sm">
-            Email-based login for saved inspections, reports, and evidence.
+            Sign in to access your saved reports and share your family's safety plan.
           </p>
         </div>
 
@@ -101,7 +101,7 @@ export default function LoginPage() {
         ) : (
           <form onSubmit={submitCode} className="space-y-3">
             <p className="text-xs text-warm-600">
-              Enter the 6-digit code sent to {email}. In development mode, check server logs.
+              Enter the 6-digit code sent to {email}.
             </p>
             <div>
               <label htmlFor="login-code" className="block text-sm font-medium text-warm-700 mb-1">

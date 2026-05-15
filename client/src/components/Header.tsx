@@ -75,7 +75,7 @@ export default function Header() {
             )}
             <Link
               to="/onboarding"
-              className="ml-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors"
+              className="ml-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-xl transition-colors"
             >
               Start Free →
             </Link>
