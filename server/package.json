@@ -1,6 +1,6 @@
 {
   "name": "hfe-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Home Fall & Safety Evaluator - Backend Server",
   "main": "dist/index.js",
   "scripts": {
