@@ -330,7 +330,7 @@ export default function AssessmentPage() {
       const response = await finalizeInspectionSession(id, allowIncomplete);
       const report = toAssessmentReport(response.report as Parameters<typeof toAssessmentReport>[0], profile as UserProfile);
       saveReport(report);
-      navigate(`/report?sessionId=${encodeURIComponent(id)}`);
+      navigate(`/report/${encodeURIComponent(id)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to generate report.");
     } finally {

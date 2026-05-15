@@ -279,6 +279,19 @@ export default function HomePage() {
               </div>
             ))}
           </div>
+          {/* Agency counterweight — follows the mortality numbers with hope */}
+          <div className="mt-8 bg-brand-50 border border-brand-200 rounded-2xl p-5 text-center">
+            <p className="font-display text-base md:text-lg italic text-brand-800 leading-snug mb-3">
+              Most falls are preventable. That's why you're here.
+            </p>
+            <Link
+              to="/onboarding"
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-brand-600 hover:text-brand-700 transition-colors"
+            >
+              Start your free walkthrough
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
         </div>
       </section>
 

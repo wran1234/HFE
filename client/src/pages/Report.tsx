@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ShieldCheck,
   AlertTriangle,
@@ -71,6 +71,9 @@ import ContractorScope from "../components/ContractorScope";
 import PremiumSection from "../components/PremiumSection";
 import ScoreRing from "../components/ScoreRing";
 import { loadProfile } from "../lib/userProfile";
+import ReportHeader from "../components/report/ReportHeader";
+import ReportTabBar from "../components/report/ReportTabBar";
+import type { TabId } from "../components/report/ReportTabBar";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -977,10 +980,9 @@ function ServiceRequestsPanel({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type TabId = "overview" | "dashboard" | "rooms" | "shopping" | "contractor" | "action" | "services" | "care" | "prevention" | "premium";
-
 export default function ReportPage() {
   const navigate = useNavigate();
+  const { sessionId: sessionIdParam } = useParams<{ sessionId?: string }>();
   const printRef = useRef<HTMLDivElement>(null);
   const [report, setReport] = useState<AssessmentReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -990,8 +992,7 @@ export default function ReportPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get("sessionId");
+    const sessionId = sessionIdParam;
     const profile = loadProfile();
     if (sessionId && profile) {
       fetchReport(sessionId)
@@ -1257,80 +1258,20 @@ export default function ReportPage() {
     { id: "premium", label: "Premium Services" },
   ];
 
-  const btnLight = "inline-flex items-center gap-1.5 py-2 px-3 text-sm bg-white border border-warm-200 text-warm-700 hover:bg-warm-50 rounded-xl font-medium transition-colors";
-
   return (
     <div className="min-h-screen bg-warm-50 px-4 sm:px-6 lg:px-8 py-8" ref={printRef}>
       <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex flex-wrap items-start justify-between gap-4 mb-8 no-print">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <ShieldCheck className="w-5 h-5 text-brand-600" />
-              <h1 className="text-2xl font-bold text-warm-900 font-display">Parent Safety & Independence Report</h1>
-            </div>
-            <div className="flex items-center gap-3 text-warm-400 text-sm">
-              <span className="flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5" />
-                {new Date(report.generatedAt).toLocaleString()}
-              </span>
-              <span className="flex items-center gap-1">
-                <User className="w-3.5 h-3.5" />
-                {subjectName}, age {report.profile.age}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button onClick={handleShare} className={btnLight}>
-              {copied ? <Check className="w-4 h-4 text-green-600" /> : <Share2 className="w-4 h-4" />}
-              {copied ? "Link Copied!" : "Share Report"}
-            </button>
-            <button onClick={handlePrint} className={btnLight}>
-              <Printer className="w-4 h-4" />
-              Print / PDF
-            </button>
-            <button onClick={handleDownload} className={btnLight}>
-              <Download className="w-4 h-4" />
-              Download
-            </button>
-            <button onClick={handleOpenPreventionExport} className={btnLight}>
-              <FileText className="w-4 h-4" />
-              Share / Export Prevention Summary
-            </button>
-            <button onClick={() => navigate("/onboarding")} className="btn-primary py-2 px-3 text-sm gap-1.5">
-              <RotateCcw className="w-4 h-4" />
-              New Assessment
-            </button>
-          </div>
-        </div>
-
-        {/* Share URL */}
-        {shareUrl && (
-          <div className="flex items-center gap-3 p-3.5 bg-brand-50 border border-brand-200 rounded-xl mb-5 animate-fade-in no-print">
-            <Copy className="w-4 h-4 text-brand-600 shrink-0" />
-            <p className="text-xs text-warm-700 truncate flex-1 font-mono">{shareUrl}</p>
-            <span className="text-xs text-green-600 shrink-0">Copied to clipboard</span>
-          </div>
-        )}
-        {loadError && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-5 text-sm text-amber-800 no-print">
-            {loadError}
-          </div>
-        )}
-
-        <div className="bg-white border border-warm-200 rounded-xl p-3 mb-5 text-xs text-warm-600">
-          Your report is powered by AI analysis and is intended as a practical guide for families — not a medical diagnosis or substitute for a professional assessment. If you assess someone else's home, make sure they know and agree. For emergencies, call 911.
-          <span className="block mt-2 font-semibold text-warm-800">
-            {report.assessmentReview?.reviewStatus === "reviewed"
-              ? "Reviewed by care coordinator"
-              : report.assessmentReview?.reviewStatus === "needs_followup"
-                ? "Needs follow-up review by a care coordinator"
-                : report.assessmentReview?.reviewStatus === "rejected"
-                  ? "Assessment review rejected; verify before sharing"
-                  : "AI-powered analysis — not yet reviewed by a care coordinator."}
-          </span>
-        </div>
+        <ReportHeader
+          report={report}
+          subjectName={subjectName}
+          shareUrl={shareUrl}
+          copied={copied}
+          loadError={loadError}
+          onShare={handleShare}
+          onPrint={handlePrint}
+          onDownload={handleDownload}
+          onOpenPreventionExport={handleOpenPreventionExport}
+        />
 
         {/* Summary row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -1405,25 +1346,30 @@ export default function ReportPage() {
           </div>
         )}
 
+        {/* Opening narrative */}
+        {obs.length > 0 && (
+          <div className="border-l-4 border-brand-400 rounded-r-xl bg-warm-50 p-5 mb-6 animate-fade-in">
+            <p className="text-sm text-warm-700 leading-relaxed">
+              <span className="font-semibold text-warm-900">
+                You completed the walkthrough of {subjectName}'s home.
+              </span>{" "}
+              {obs.length} area{obs.length !== 1 ? "s" : ""} came up for review
+              {highObs.length > 0
+                ? `, including ${highObs.length} worth addressing soon`
+                : ""}
+              .{" "}
+              {score >= 80
+                ? "The home looks good overall — these fixes will make it even safer."
+                : score >= 60
+                  ? "There are a few things worth addressing. Most are straightforward fixes."
+                  : "Some important things came up. This report gives you a clear path forward."}
+              {" "}Here's what we found, room by room.
+            </p>
+          </div>
+        )}
+
         {/* Tabs */}
-        <div className="flex gap-1 bg-warm-100 p-1 rounded-xl border border-warm-200 mb-6 overflow-x-auto no-print">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`shrink-0 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
-                activeTab === tab.id
-                  ? "bg-white text-warm-900 shadow"
-                  : "text-warm-500 hover:text-warm-700"
-              }`}
-            >
-              {tab.label}
-              {tab.id === "premium" && (
-                <Star className="w-2.5 h-2.5 inline ml-1 text-amber-500" />
-              )}
-            </button>
-          ))}
-        </div>
+        <ReportTabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
 
         {/* Tab content */}
         <div className="animate-fade-in">

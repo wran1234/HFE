@@ -33,6 +33,7 @@ export default function App() {
                   <Route path="/assessment" element={<RequireAuth><Assessment /></RequireAuth>} />
                   <Route path="/assessment/live" element={<RequireAuth><LiveAssessment /></RequireAuth>} />
                   <Route path="/report" element={<RequireAuth><Report /></RequireAuth>} />
+                  <Route path="/report/:sessionId" element={<RequireAuth><Report /></RequireAuth>} />
                   <Route path="/admin/revenue" element={<RequireAdmin><RevenueDashboardPage /></RequireAdmin>} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
