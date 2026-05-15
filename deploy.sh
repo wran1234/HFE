@@ -29,6 +29,8 @@ load_env_var() {
 }
 
 DATABASE_URL=$(load_env_var DATABASE_URL)
+# Derive direct (non-pooled) URL for Prisma migrations — strips "-pooler" from the Neon hostname
+DIRECT_URL=$(echo "$DATABASE_URL" | sed 's/-pooler\./\./')
 GEMINI_API_KEY=$(load_env_var GEMINI_API_KEY)
 GEMINI_LIVE_MODEL=$(load_env_var GEMINI_LIVE_MODEL)
 AUTH_SESSION_SECRET=$(load_env_var AUTH_SESSION_SECRET)
@@ -89,6 +91,7 @@ sync_secret() {
 
 echo "Syncing secrets to Secret Manager..."
 sync_secret "database-url"             "$DATABASE_URL"
+sync_secret "direct-url"              "$DIRECT_URL"
 sync_secret "gemini-api-key"           "$GEMINI_API_KEY"
 sync_secret "auth-session-secret"      "$AUTH_SESSION_SECRET"
 sync_secret "sentry-dsn"               "$SENTRY_DSN"
@@ -109,7 +112,7 @@ PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectN
 SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 echo "Granting Cloud Run access to secrets..."
-for secret in database-url gemini-api-key auth-session-secret sentry-dsn resend-api-key upstash-redis-rest-url upstash-redis-rest-token auth-maintenance-key; do
+for secret in database-url direct-url gemini-api-key auth-session-secret sentry-dsn resend-api-key upstash-redis-rest-url upstash-redis-rest-token auth-maintenance-key; do
   if gcloud secrets describe "$secret" --project="$PROJECT_ID" &>/dev/null; then
     gcloud secrets add-iam-policy-binding "$secret" \
       --member="serviceAccount:${SA}" \
@@ -128,7 +131,7 @@ SERVICE_URL=$(gcloud run services describe "$SERVICE_NAME" \
 APP_BASE_URL="${SERVICE_URL:-https://hfe-app-89708189118.us-east1.run.app}"
 
 # Build secrets and env var flags
-SECRETS_FLAG="DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest,AUTH_SESSION_SECRET=auth-session-secret:latest,RESEND_API_KEY=resend-api-key:latest"
+SECRETS_FLAG="DATABASE_URL=database-url:latest,DIRECT_URL=direct-url:latest,GEMINI_API_KEY=gemini-api-key:latest,AUTH_SESSION_SECRET=auth-session-secret:latest,RESEND_API_KEY=resend-api-key:latest"
 [ -n "$SENTRY_DSN" ]                   && SECRETS_FLAG="${SECRETS_FLAG},SENTRY_DSN=sentry-dsn:latest"
 [ -n "$UPSTASH_REDIS_REST_URL" ]   && SECRETS_FLAG="${SECRETS_FLAG},UPSTASH_REDIS_REST_URL=upstash-redis-rest-url:latest"
 [ -n "$UPSTASH_REDIS_REST_TOKEN" ] && SECRETS_FLAG="${SECRETS_FLAG},UPSTASH_REDIS_REST_TOKEN=upstash-redis-rest-token:latest"
