@@ -43,7 +43,23 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Read(//Users/williamran/.claude/**)",
       "Read(//Users/williamran/.claude/agents/**)",
-      "Bash(./setup)"
+      "Bash(./setup)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse snapshot *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse screenshot *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse console *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse links *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse goto *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse click *)",
+      "Bash(curl *)",
+      "Bash(jobs -l)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse cookie-set *)",
+      "Bash($B js *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse js *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse url *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse network *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse viewport *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse ux-audit *)",
+      "Bash(/Users/williamran/.claude/skills/gstack/browse/dist/browse accessibility *)"
     ]
   }
 }
