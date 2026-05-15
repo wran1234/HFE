@@ -6,3 +6,9 @@ node_modules
 .DS_Store
 *.log
 .gstack/
+# Evidence uploads are served from GCS in production, not tracked in git
+server/evidence/
+# Design scratch images and slideshows
+*.png
+ChatGPT*
+slideshow/
