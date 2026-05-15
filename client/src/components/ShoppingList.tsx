@@ -37,7 +37,9 @@ export default function ShoppingList({ observations, sessionId, reportId }: Shop
     if (loadingProduct === product.name) return;
     setError(null);
     setLoadingProduct(product.name);
-    const popup = window.open("about:blank", "_blank", "noopener,noreferrer");
+    // Open without noopener so we can redirect via popup.location.href after the async
+    // tracking call. noopener severs the JS reference, leaving the tab at about:blank.
+    const popup = window.open("about:blank", "_blank");
     try {
       void trackAnalyticsEvent({
         eventName: "affiliate_click_started",
