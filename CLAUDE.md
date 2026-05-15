@@ -18,3 +18,19 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+- Deploy to Google Cloud → invoke setup-deploy
+
+## Deploy Configuration (configured by /setup-deploy)
+- Platform: Google Cloud Run
+- Production URL: https://hfe-app-n3tve7bc4a-ue.a.run.app
+- Deploy workflow: ./deploy.sh hfe-ai (Cloud Build + Cloud Run)
+- Deploy status command: gcloud run services describe hfe-app --region=us-east1 --project=hfe-ai --format="value(status.url)"
+- Merge method: squash
+- Project type: web app (React + Express, full-stack)
+- Post-deploy health check: https://hfe-app-n3tve7bc4a-ue.a.run.app/api/health
+
+### Custom deploy hooks
+- Pre-merge: none
+- Deploy trigger: ./deploy.sh hfe-ai
+- Deploy status: gcloud run services describe hfe-app --region=us-east1 --project=hfe-ai --format="value(status.latestReadyRevisionName)"
+- Health check: https://hfe-app-n3tve7bc4a-ue.a.run.app/api/health
