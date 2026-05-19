@@ -25,14 +25,20 @@ interface ReportItem {
 export default function HistoryPage() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [reports, setReports] = useState<ReportItem[]>([]);
+  const [sessionsCursor, setSessionsCursor] = useState<string | null>(null);
+  const [reportsCursor, setReportsCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
+  const [loadingMoreReports, setLoadingMoreReports] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([listSessions(), listReports()])
+    Promise.all([listSessions({ limit: 20 }), listReports({ limit: 20 })])
       .then(([sessionResponse, reportResponse]) => {
         setSessions(sessionResponse.sessions);
         setReports(reportResponse.reports);
+        setSessionsCursor(sessionResponse.nextCursor);
+        setReportsCursor(reportResponse.nextCursor);
       })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load history.");
@@ -40,8 +46,72 @@ export default function HistoryPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  function loadMoreSessions() {
+    if (!sessionsCursor || loadingMoreSessions) return;
+    setLoadingMoreSessions(true);
+    listSessions({ limit: 20, cursor: sessionsCursor })
+      .then((res) => {
+        setSessions((prev) => [...prev, ...res.sessions]);
+        setSessionsCursor(res.nextCursor);
+      })
+      .catch(() => setError("Failed to load more sessions. Please try again."))
+      .finally(() => setLoadingMoreSessions(false));
+  }
+
+  function loadMoreReports() {
+    if (!reportsCursor || loadingMoreReports) return;
+    setLoadingMoreReports(true);
+    listReports({ limit: 20, cursor: reportsCursor })
+      .then((res) => {
+        setReports((prev) => [...prev, ...res.reports]);
+        setReportsCursor(res.nextCursor);
+      })
+      .catch(() => setError("Failed to load more reports. Please try again."))
+      .finally(() => setLoadingMoreReports(false));
+  }
+
   if (loading) {
-    return <div className="p-8 text-warm-500">Loading history...</div>;
+    return (
+      <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {/* Header skeleton */}
+        <div className="flex items-center justify-between">
+          <div className="h-8 w-48 bg-gray-200 animate-pulse rounded-lg" />
+          <div className="h-9 w-40 bg-gray-200 animate-pulse rounded-xl" />
+        </div>
+
+        {/* Sessions card skeleton */}
+        <div className="bg-white border border-warm-200 rounded-2xl p-6">
+          <div className="h-5 w-24 bg-gray-200 animate-pulse rounded mb-4" />
+          <div className="space-y-2">
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="p-3 bg-warm-50 rounded-lg border border-warm-200 flex items-center justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-4 w-32 bg-gray-200 animate-pulse rounded" />
+                  <div className="h-3 w-56 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="h-4 w-20 bg-gray-200 animate-pulse rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Reports card skeleton */}
+        <div className="bg-white border border-warm-200 rounded-2xl p-6">
+          <div className="h-5 w-20 bg-gray-200 animate-pulse rounded mb-4" />
+          <div className="space-y-2">
+            {[...Array(3)].map((_, i) => (
+              <div key={i} className="p-3 bg-warm-50 rounded-lg border border-warm-200 flex items-center justify-between gap-3">
+                <div className="space-y-1.5 flex-1">
+                  <div className="h-4 w-28 bg-gray-200 animate-pulse rounded" />
+                  <div className="h-3 w-44 bg-gray-200 animate-pulse rounded" />
+                </div>
+                <div className="h-4 w-12 bg-gray-200 animate-pulse rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error) {
@@ -80,7 +150,7 @@ export default function HistoryPage() {
                   </p>
                 </div>
                 {session.reportAvailable ? (
-                  <Link to={`/report?sessionId=${session.id}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
+                  <Link to={`/report/${encodeURIComponent(session.id)}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
                     Open report
                   </Link>
                 ) : (
@@ -89,6 +159,17 @@ export default function HistoryPage() {
               </div>
             ))}
           </div>
+          {sessionsCursor && (
+            <div className="mt-3 text-center">
+              <button
+                onClick={loadMoreSessions}
+                disabled={loadingMoreSessions}
+                className="text-sm text-brand-600 hover:text-brand-700 font-medium disabled:opacity-50"
+              >
+                {loadingMoreSessions ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -108,11 +189,22 @@ export default function HistoryPage() {
                     {report.hazardCount !== undefined ? ` · ${report.hazardCount} hazards` : ""}
                   </p>
                 </div>
-                <Link to={`/report?sessionId=${report.sessionId}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
+                <Link to={`/report/${encodeURIComponent(report.sessionId)}`} className="text-sm text-brand-600 hover:text-brand-700 font-medium">
                   View
                 </Link>
               </div>
             ))}
+          </div>
+        )}
+        {reportsCursor && (
+          <div className="mt-3 text-center">
+            <button
+              onClick={loadMoreReports}
+              disabled={loadingMoreReports}
+              className="text-sm text-brand-600 hover:text-brand-700 font-medium disabled:opacity-50"
+            >
+              {loadingMoreReports ? "Loading..." : "Load more"}
+            </button>
           </div>
         )}
       </div>

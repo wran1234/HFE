@@ -3,23 +3,28 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // DIRECT_URL bypasses the connection pooler for migrations (advisory lock support)
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
   name      String?
+  role      String   @default("user")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  homes           Home[]
-  sessions        InspectionSession[]
-  authSessions    AuthSession[]
-  loginTokens     EmailLoginToken[]
-  reportSnapshots ReportSnapshot[]
-  evidenceAssets  EvidenceAsset[]
+  homes             Home[]
+  sessions          InspectionSession[]
+  authSessions      AuthSession[]
+  loginTokens       EmailLoginToken[]
+  reportSnapshots   ReportSnapshot[]
+  evidenceAssets    EvidenceAsset[]
+  affiliateClicks   AffiliateClick[]
+  contractorLeads   ContractorLead[]
 }
 
 model AuthSession {
@@ -50,6 +55,8 @@ model EmailLoginToken {
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([email, createdAt])
+  @@index([expiresAt])
+  @@index([usedAt])
 }
 
 model Home {
@@ -81,6 +88,15 @@ model InspectionSession {
   currentRoom        String?
   overallRiskLevel   String?
   conversationHistory Json?
+  consentAccepted    Boolean  @default(false)
+  consentAcceptedAt  DateTime?
+  consentVersion     String?
+  recordingPermissionConfirmed Boolean @default(false)
+  shareWithCareCoordinator Boolean @default(false)
+  shareWithContractor Boolean @default(false)
+  shareWithInsurer Boolean @default(false)
+  pilotCohortId     String?
+  referralId        String?
   startedAt          DateTime @default(now())
   endedAt            DateTime?
   createdAt          DateTime @default(now())
@@ -94,8 +110,124 @@ model InspectionSession {
   recommendations Recommendation[]
   reportSnapshots ReportSnapshot[]
   evidenceAssets  EvidenceAsset[]
+  affiliateClicks AffiliateClick[]
+  contractorLeads ContractorLead[]
+  contractorSuggestions ContractorSuggestion[]
+  seniorProfile   SeniorProfile?
+  careNotes       CareNote[]
+  recommendationEvidence RecommendationEvidence[]
+  serviceRequests ServiceRequest[]
+  assessmentReview AssessmentReview?
+  pilotCohort    PilotCohort? @relation(fields: [pilotCohortId], references: [id], onDelete: SetNull)
+  referral       PartnerReferral? @relation(fields: [referralId], references: [id], onDelete: SetNull)
+  followUpCheckIns FollowUpCheckIn[]
 
   @@index([userId, createdAt])
+  @@index([pilotCohortId, createdAt])
+  @@index([referralId, createdAt])
+}
+
+model PartnerOrganization {
+  id               String   @id @default(cuid())
+  name             String
+  organizationType String
+  displayName      String?
+  logoUrl          String?
+  primaryContact   String?
+  contactName      String?
+  contactEmail     String?
+  contactPhone     String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  pilotCohorts PilotCohort[]
+  partnerReferrals PartnerReferral[]
+
+  @@index([organizationType, createdAt])
+}
+
+model PilotCohort {
+  id                    String   @id @default(cuid())
+  partnerOrganizationId String
+  name                  String
+  description           String?
+  status                String   @default("draft")
+  startDate             DateTime?
+  endDate               DateTime?
+  targetHouseholds      Int?
+  consentVersion        String?
+  notes                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  partnerOrganization PartnerOrganization @relation(fields: [partnerOrganizationId], references: [id], onDelete: Cascade)
+  sessions            InspectionSession[]
+  followUpCheckIns    FollowUpCheckIn[]
+  partnerReferrals    PartnerReferral[]
+
+  @@index([partnerOrganizationId, status])
+  @@index([status, createdAt])
+}
+
+model PartnerReferral {
+  id                    String   @id @default(cuid())
+  partnerOrganizationId String
+  pilotCohortId         String?
+  referralCode          String   @unique
+  inviteType            String
+  recipientName         String?
+  recipientEmail        String?
+  recipientPhone        String?
+  seniorName            String?
+  status                String   @default("created")
+  sourceLabel           String?
+  notes                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  openedAt              DateTime?
+  startedAt             DateTime?
+  consentCompletedAt    DateTime?
+  assessmentCompletedAt DateTime?
+  reportGeneratedAt     DateTime?
+
+  partnerOrganization PartnerOrganization @relation(fields: [partnerOrganizationId], references: [id], onDelete: Cascade)
+  pilotCohort         PilotCohort?        @relation(fields: [pilotCohortId], references: [id], onDelete: SetNull)
+  sessions            InspectionSession[]
+
+  @@index([partnerOrganizationId, status])
+  @@index([pilotCohortId, status])
+  @@index([status, createdAt])
+}
+
+model FollowUpCheckIn {
+  id                         String   @id @default(cuid())
+  sessionId                  String
+  pilotCohortId              String?
+  checkInType                String
+  status                     String   @default("scheduled")
+  scheduledFor               DateTime
+  completedAt                DateTime?
+  notes                      String?
+  newFallsReported           Boolean?
+  nearFallsReported          Boolean?
+  newHospitalVisitReported   Boolean?
+  newCaregiverSupportAdded   Boolean?
+  majorHomeFixCompleted      Boolean?
+  medicationRoutineImproved  Boolean?
+  parentFeelsSafer           String?
+  familyFeelsMorePrepared    String?
+  currentBiggestConcern      String?
+  requestCareCoordinatorFollowup Boolean @default(false)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  session     InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  pilotCohort PilotCohort?      @relation(fields: [pilotCohortId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, scheduledFor])
+  @@index([pilotCohortId, scheduledFor])
+  @@index([status, scheduledFor])
 }
 
 model RoomScan {
@@ -134,6 +266,9 @@ model HazardObservation {
   session       InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   roomScan      RoomScan?         @relation(fields: [roomScanId], references: [id], onDelete: SetNull)
   evidenceAsset EvidenceAsset?    @relation(fields: [evidenceAssetId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([roomScanId])
 }
 
 model FinalHazard {
@@ -150,6 +285,8 @@ model FinalHazard {
 
   session         InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   recommendations Recommendation[]
+
+  @@index([sessionId])
 }
 
 model Recommendation {
@@ -164,11 +301,126 @@ model Recommendation {
   estimatedCostMax       Int?
   materialsJson          Json?
   installationComplexity String?
+  actionStatus           String   @default("pending")
+  actionOwner            String?
+  actionPriority         String?
+  dueDate                DateTime?
+  completedAt            DateTime?
+  skippedReason          String?
+  estimatedPreventionImpact String?
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
-  session    InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  finalHazard FinalHazard      @relation(fields: [finalHazardId], references: [id], onDelete: Cascade)
+  session    InspectionSession      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  finalHazard FinalHazard           @relation(fields: [finalHazardId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, actionStatus])
+  @@index([finalHazardId])
+  @@index([actionPriority, actionStatus])
+}
+
+model SeniorProfile {
+  id                     String   @id @default(cuid())
+  sessionId              String   @unique
+  seniorName             String?
+  relationshipToUser     String?
+  ageRange               String   @default("unknown")
+  livingArrangement      String   @default("unknown")
+  mobilityLevel          String   @default("unknown")
+  priorFalls             String   @default("unknown")
+  chronicConditions      Json?
+  medicationComplexity   String   @default("unknown")
+  memoryConcerns         String   @default("unknown")
+  visionConcerns         Boolean?
+  hearingConcerns        Boolean?
+  emergencyContactName   String?
+  emergencyContactPhone  String?
+  primaryCaregiver       String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+model CareNote {
+  id              String   @id @default(cuid())
+  sessionId       String
+  noteType        String
+  authorName      String?
+  authorRole      String
+  body            String
+  observedChanges String?
+  concerns        String?
+  followUpNeeded  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model RecommendationEvidence {
+  id                     String   @id @default(cuid())
+  sessionId              String
+  recommendationActionId String
+  evidenceType           String
+  imageUrl               String?
+  note                   String?
+  uploadedByRole         String
+  createdAt              DateTime @default(now())
+
+  session        InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([recommendationActionId, createdAt])
+}
+
+model ServiceRequest {
+  id                     String   @id @default(cuid())
+  sessionId              String
+  recommendationActionId String?
+  serviceType            String
+  title                  String
+  description            String
+  priority               String
+  requestedByRole        String
+  requestedByName        String?
+  status                 String   @default("draft")
+  preferredDate          DateTime?
+  scheduledAt            DateTime?
+  completedAt            DateTime?
+  providerName           String?
+  providerContact        String?
+  notes                  String?
+  serviceQualityRating   Int?
+  familyFeedback         String?
+  providerFollowupNeeded Boolean @default(false)
+  completionVerified     Boolean @default(false)
+  completionVerifiedAt   DateTime?
+  completionVerifiedBy   String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([recommendationActionId])
+  @@index([serviceType, status])
+}
+
+model AssessmentReview {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique
+  reviewStatus    String   @default("not_reviewed")
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  reviewerNotes   String?
+  confidenceLevel String   @default("medium")
+  flaggedIssues   Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 }
 
 model ReportSnapshot {
@@ -181,6 +433,107 @@ model ReportSnapshot {
 
   session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   user    User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+model ContractorLead {
+  id               String   @id @default(cuid())
+  userId           String?
+  sessionId        String?
+  name             String
+  email            String
+  phone            String?
+  zipCode          String
+  preferredContact String
+  notes            String?
+  status           String   @default("new")
+  internalNotes    String?
+  projectUrgency   String?
+  estimatedBudget  String?
+  scopeText        String
+  createdAt        DateTime @default(now())
+
+  user    User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session InspectionSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([email, zipCode, createdAt])
+}
+
+model ContractorSuggestion {
+  id            String   @id @default(cuid())
+  sessionId     String
+  trade         String
+  zipCode       String
+  provider      String   @default("google_places")
+  externalId    String?
+  name          String
+  rating        Float?
+  reviewCount   Int?
+  address       String?
+  phone         String?
+  websiteUrl    String?
+  profileUrl    String?
+  sourceUrl     String?
+  status        String   @default("suggested")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  session InspectionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@index([zipCode, trade, rating])
+  @@unique([sessionId, trade, zipCode, provider, externalId])
+}
+
+model AffiliateClick {
+  id           String   @id @default(cuid())
+  userId       String?
+  sessionId    String?
+  reportId     String?
+  productName  String
+  category     String
+  affiliateUrl String
+  createdAt    DateTime @default(now())
+
+  user    User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session InspectionSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([sessionId, createdAt])
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  eventName String
+  sessionId String?
+  reportId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([eventName, createdAt])
+  @@index([sessionId, createdAt])
+  @@index([reportId, createdAt])
+}
+
+model BetaWaitlistSignup {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      String?
+  zipCode   String?
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([zipCode, createdAt])
 }
 
 model EvidenceAsset {
@@ -200,4 +553,7 @@ model EvidenceAsset {
   user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   session       InspectionSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   observations  HazardObservation[]
+
+  @@index([sessionId, createdAt])
+  @@index([userId, createdAt])
 }

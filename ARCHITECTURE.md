@@ -116,3 +116,44 @@
 - Add `subsidyEngine` after recommendation generation to enrich each recommendation with local grants/rebates.
 - Add `contractorMatchService` after report creation to attach provider matches by fix type and urgency.
 - These remain post-assessment enrichments consuming stable `FinalHazard` and `Recommendation` entities.
+
+## Beta Launch Commands and Flow
+
+### Local startup
+
+1. Install deps:
+   - `npm install --prefix server`
+   - `npm install --prefix client`
+2. Start backend:
+   - `npm run dev --prefix server`
+3. Start frontend:
+   - `npm run dev --prefix client`
+
+### Migrations
+
+- Apply migrations locally:
+  - `npx prisma migrate dev --prefix server`
+- Deploy migrations in deployed environments:
+  - `npm run prisma:migrate --prefix server`
+
+### Builds
+
+- Server build:
+  - `npm run build --prefix server`
+- Client build:
+  - `npm run build --prefix client`
+
+### Demo seed data (local only)
+
+- Demo seed is intentionally blocked in production.
+- Local command:
+  - `ALLOW_DEMO_SEED=true npm run seed:demo --prefix server`
+
+### Beta testing flow
+
+1. Apply latest DB migrations.
+2. (Optional) seed demo revenue data locally.
+3. Run server and client builds.
+4. Execute checklist in `BETA_QA.md`.
+5. Verify auth-protected admin endpoints from an authenticated session.
+6. Export CSV and verify lead ops columns + values.

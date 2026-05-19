@@ -1,15 +1,16 @@
 import WebSocket from "ws";
 import { runAssessmentEngine } from "../assessment/assessmentEngine";
 import { extractHazardsFromModelResponse } from "../assessment/hazardExtractor";
-import { db } from "../data/inMemoryDatabase";
+import { db } from "../data/repository";
 import { MobilityAid, RoomType } from "../domain/enums";
 import { REQUIRED_ROOM_ORDER, ROOM_CHECKLISTS } from "../domain/roomChecklists";
-import { HazardObservation, InspectionSession, ReportPayload, RoomScan } from "../domain/types";
+import { HazardObservation, InspectionSession, ReportPayload, RoomScan, SeniorProfile } from "../domain/types";
 import { buildReportPayload } from "../reporting/reportBuilder";
 import { persistReportPayload } from "../reporting/reportBuilder";
 import { StorageAdapter } from "../storage/storageAdapter";
 import { GeminiLiveClient } from "./geminiLiveClient";
 import { InspectionStateMachine } from "./inspectionStateMachine";
+import { DEFAULT_GEMINI_LIVE_MODEL } from "./liveConfig";
 
 const SNAPSHOT_RE = /<<SNAPSHOT\s+hazardId="([^"]+)"\s+label="([^"]+)">>/g;
 const ROOM_HINT_RE = /(entryway|living[_\s]room|bedroom|bathroom|kitchen|stairs|exterior[_\s]entry)/i;
@@ -47,6 +48,7 @@ export class SessionOrchestrator {
   private storage: StorageAdapter;
   private stateMachine: InspectionStateMachine;
   private session: InspectionSession;
+  private liveModel: string;
   private latestFrame?: string;
   private frameCount = 0;
 
@@ -56,16 +58,29 @@ export class SessionOrchestrator {
     storage: StorageAdapter;
     session: InspectionSession;
     roomSequence: RoomType[];
+    liveModel?: string;
     profile: {
       age?: number;
       mobilityLevel?: string;
       fallHistoryCount?: number;
       nightBathroomTrips?: boolean;
+      seniorProfile?: Partial<SeniorProfile>;
+      pilotCohortId?: string;
+      referralId?: string;
+      consent?: {
+        consentAccepted?: boolean;
+        consentVersion?: string;
+        recordingPermissionConfirmed?: boolean;
+        shareWithCareCoordinator?: boolean;
+        shareWithContractor?: boolean;
+        shareWithInsurer?: boolean;
+      };
     };
   }) {
     this.ws = params.ws;
     this.gemini = new GeminiLiveClient(params.geminiApiKey);
     this.storage = params.storage;
+    this.liveModel = params.liveModel ?? DEFAULT_GEMINI_LIVE_MODEL;
 
     const roomSequence = params.roomSequence?.length ? params.roomSequence : REQUIRED_ROOM_ORDER;
     this.stateMachine = new InspectionStateMachine(roomSequence);
@@ -75,6 +90,7 @@ export class SessionOrchestrator {
   static async create(params: {
     ws: WebSocket;
     geminiApiKey: string;
+    liveModel?: string;
     storage: StorageAdapter;
     userId: string;
     profile: {
@@ -84,6 +100,17 @@ export class SessionOrchestrator {
       fallHistoryCount?: number;
       nightBathroomTrips?: boolean;
       roomSequence?: RoomType[];
+      seniorProfile?: Partial<SeniorProfile>;
+      pilotCohortId?: string;
+      referralId?: string;
+      consent?: {
+        consentAccepted?: boolean;
+        consentVersion?: string;
+        recordingPermissionConfirmed?: boolean;
+        shareWithCareCoordinator?: boolean;
+        shareWithContractor?: boolean;
+        shareWithInsurer?: boolean;
+      };
     };
   }): Promise<SessionOrchestrator> {
     const home = await db.ensureHomeForUser(params.userId, params.profile.city);
@@ -96,15 +123,28 @@ export class SessionOrchestrator {
       nightBathroomTrips: !!params.profile.nightBathroomTrips,
       city: params.profile.city,
       overallRiskLevel: undefined,
+      pilotCohortId: params.profile.pilotCohortId,
+      referralId: params.profile.referralId,
+      consentAccepted: Boolean(params.profile.consent?.consentAccepted),
+      consentAcceptedAt: params.profile.consent?.consentAccepted ? new Date().toISOString() : undefined,
+      consentVersion: params.profile.consent?.consentVersion ?? "parent-safety-consent-v1",
+      recordingPermissionConfirmed: Boolean(params.profile.consent?.recordingPermissionConfirmed),
+      shareWithCareCoordinator: Boolean(params.profile.consent?.shareWithCareCoordinator),
+      shareWithContractor: Boolean(params.profile.consent?.shareWithContractor),
+      shareWithInsurer: Boolean(params.profile.consent?.shareWithInsurer),
     });
     const roomSequence = params.profile.roomSequence?.length ? params.profile.roomSequence : REQUIRED_ROOM_ORDER;
     for (const room of roomSequence) {
       await db.getOrCreateRoomScan(session.id, room);
     }
+    if (params.profile.seniorProfile) {
+      await db.upsertSeniorProfile(session.id, params.profile.seniorProfile);
+    }
 
     return new SessionOrchestrator({
       ws: params.ws,
       geminiApiKey: params.geminiApiKey,
+      liveModel: params.liveModel,
       storage: params.storage,
       session,
       roomSequence,
@@ -115,6 +155,7 @@ export class SessionOrchestrator {
   static async resume(params: {
     ws: WebSocket;
     geminiApiKey: string;
+    liveModel?: string;
     storage: StorageAdapter;
     session: InspectionSession;
     roomScans: RoomScan[];
@@ -127,6 +168,7 @@ export class SessionOrchestrator {
     const orchestrator = new SessionOrchestrator({
       ws: params.ws,
       geminiApiKey: params.geminiApiKey,
+      liveModel: params.liveModel,
       storage: params.storage,
       session: params.session,
       roomSequence,
@@ -176,6 +218,11 @@ export class SessionOrchestrator {
     return this.session;
   }
 
+  canFinalizeReport(): boolean {
+    // 60 is the minimum coverage threshold (0-100 scale) required to allow report generation.
+    return this.stateMachine.getState().completionScore >= 60;
+  }
+
   handleVideoFrame(base64Jpeg: string): void {
     this.latestFrame = base64Jpeg;
     this.frameCount += 1;
@@ -192,27 +239,44 @@ export class SessionOrchestrator {
   }
 
   async start(): Promise<void> {
+    const started = await this.sendUserText("Begin the safety inspection with a warm greeting and ask for the first entryway view.");
+    if (!started) return;
     this.send("session_started", {
       sessionId: this.session.id,
       inspectionState: this.buildInspectionStatePayload(),
     });
-    await this.sendUserText("Begin the safety inspection with a warm greeting and ask for the first entryway view.");
   }
 
-  async sendUserText(text: string): Promise<void> {
+  async sendUserText(text: string): Promise<boolean> {
     this.send("ai_typing", {});
-    const response = await this.gemini.sendTurn({
-      model: "gemini-2.5-flash",
-      systemInstruction: this.buildSystemInstruction(),
-      userText: text,
-      latestFrame: this.latestFrame,
-      onChunk: (chunk) => {
-        const cleaned = chunk
-          .replace(/<<HAZARD_JSON>>[\s\S]*?<<\/HAZARD_JSON>>/g, "")
-          .replace(/<<SNAPSHOT[^>]*>>/g, "");
-        if (cleaned.trim()) this.send("ai_message_chunk", { text: cleaned });
-      },
-    });
+    let response: { fullText: string };
+    try {
+      response = await this.gemini.sendTurn({
+        model: this.liveModel,
+        systemInstruction: this.buildSystemInstruction(),
+        userText: text,
+        latestFrame: this.latestFrame,
+        onChunk: (chunk) => {
+          const cleaned = chunk
+            .replace(/<<HAZARD_JSON>>[\s\S]*?<<\/HAZARD_JSON>>/g, "")
+            .replace(/<<SNAPSHOT[^>]*>>/g, "");
+          if (cleaned.trim()) this.send("ai_message_chunk", { text: cleaned });
+        },
+        onAudio: (chunk) => {
+          this.send("ai_audio_chunk", chunk);
+        },
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const isModelIssue = /model|not found|not supported|unsupported/i.test(detail);
+      this.send("error", {
+        message: isModelIssue
+          ? `AI Live model "${this.liveModel}" is not available for this API key. Check GEMINI_LIVE_MODEL.`
+          : `AI Live connection failed: ${detail}`,
+      });
+      this.send("turn_complete", {});
+      return false;
+    }
 
     await this.captureHazards(response.fullText);
     await db.updateSessionConversationHistory(
@@ -222,9 +286,19 @@ export class SessionOrchestrator {
     this.handleRoomGuidance(response.fullText, text);
     this.handleFollowUps();
     this.send("turn_complete", {});
+    return true;
   }
 
   async finalizeSession(): Promise<ReportPayload> {
+    if (!this.session.consentAccepted || !this.session.recordingPermissionConfirmed) {
+      this.send("error", { message: "Consent and recording permission must be confirmed before generating a prevention report." });
+      throw new Error("CONSENT_REQUIRED");
+    }
+    // Guard against concurrent or duplicate finalize calls on the same orchestrator.
+    if (this.session.status === "finalizing" || this.session.status === "completed") {
+      this.send("error", { message: "Session is already being finalized or has been completed." });
+      throw new Error("ALREADY_FINALIZED");
+    }
     this.session.status = "finalizing";
     this.session.endedAt = new Date().toISOString();
     await db.updateSession(this.session);
@@ -233,9 +307,35 @@ export class SessionOrchestrator {
     this.session.status = "completed";
     this.session.overallRiskLevel = assessment.overallRiskLevel;
     await db.updateSession(this.session);
+    if (this.session.referralId) {
+      await db.updatePartnerReferralStatus(this.session.referralId, "assessment_completed").catch((err) => {
+        console.warn("[FINALIZE] referral status update (assessment_completed) failed for session", this.session.id, String(err));
+      });
+    }
 
-    const report = buildReportPayload(assessment);
-    await persistReportPayload(report, this.session.userId);
+    const seniorProfile = await db.getSeniorProfile(this.session.id);
+    const report = buildReportPayload(assessment, seniorProfile);
+    report.assessmentReview = await db.getAssessmentReview(this.session.id);
+    report.consent = {
+      consentAccepted: Boolean(this.session.consentAccepted),
+      consentAcceptedAt: this.session.consentAcceptedAt,
+      consentVersion: this.session.consentVersion,
+      recordingPermissionConfirmed: Boolean(this.session.recordingPermissionConfirmed),
+      shareWithCareCoordinator: Boolean(this.session.shareWithCareCoordinator),
+      shareWithContractor: Boolean(this.session.shareWithContractor),
+      shareWithInsurer: Boolean(this.session.shareWithInsurer),
+    };
+    try {
+      await persistReportPayload(report, this.session.userId);
+      if (this.session.referralId) {
+        await db.updatePartnerReferralStatus(this.session.referralId, "report_generated").catch((err) => {
+          console.warn("[FINALIZE] referral status update (report_generated) failed for session", this.session.id, String(err));
+        });
+      }
+    } catch (err) {
+      console.error("[REPORT] persist failed for session", this.session.id, String(err));
+      this.send("warning", { message: "Your report is ready but may not appear in History due to a temporary issue. Please screenshot or save it now." });
+    }
     return report;
   }
 

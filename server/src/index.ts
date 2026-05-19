@@ -3,26 +3,30 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import express from "express";
+import helmet from "helmet";
 import http from "http";
 import path from "path";
-import * as Sentry from "@sentry/node";
 import { WebSocket, WebSocketServer } from "ws";
 import { runAuthCleanup } from "./auth/authCleanup";
 import { AuthService } from "./auth/authService";
 import { attachAuthUser, AUTH_COOKIE_NAME, requireAuth } from "./auth/authMiddleware";
 import { createEmailSenderFromEnv } from "./auth/emailSenderFactory";
-import { clientIpFromRequest } from "./auth/rateLimit";
 import { SharedAuthRateLimiter } from "./auth/sharedAuthRateLimiter";
-import { runAssessmentEngine } from "./assessment/assessmentEngine";
-import { db } from "./data/inMemoryDatabase";
+import { db } from "./data/repository";
 import { RoomType } from "./domain/enums";
 import { REQUIRED_ROOM_ORDER } from "./domain/roomChecklists";
-import { ReportPayload, SessionContextUpdate } from "./domain/types";
 import { SessionOrchestrator } from "./realtime/sessionOrchestrator";
-import { buildReportPayload, persistReportPayload } from "./reporting/reportBuilder";
+import { getGeminiLiveModel } from "./realtime/liveConfig";
 import { GcsStorageAdapter } from "./storage/gcsStorageAdapter";
 import { LocalStorageAdapter } from "./storage/storageAdapter";
 import { StorageAdapter } from "./storage/storageAdapter";
+import { createAuthRouter, createMaintenanceRouter, createLeadsRouter } from "./routes/auth";
+import { createSessionsRouter } from "./routes/sessions";
+import { createReportsRouter } from "./routes/reports";
+import { createAdminRouter } from "./routes/admin";
+import { createPublicRouter } from "./routes/public";
+import { createServiceRequestsRouter } from "./routes/serviceRequests";
+import { parseConsentState, parseSeniorProfile, resolveReportEvidenceUrls, optionalString } from "./routes/shared";
 
 dotenv.config();
 if (process.env.NODE_ENV === "production") {
@@ -34,22 +38,47 @@ if (process.env.NODE_ENV === "production") {
     console.error("FATAL: GEMINI_API_KEY must be set in production");
     process.exit(1);
   }
+  if (!process.env.ALLOWED_ORIGIN) {
+    console.warn("WARNING: ALLOWED_ORIGIN not set in production. CORS will default to http://localhost:5173 which will block all browser requests.");
+  }
 }
 
 const app = express();
 const server = http.createServer(app);
 const authService = new AuthService(createEmailSenderFromEnv());
 
+// Helmet sets secure HTTP headers: CSP, HSTS, X-Frame-Options, X-Content-Type-Options, etc.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:", "https:"],
+      connectSrc: ["'self'", "wss:", "ws:"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // allow GCS signed-URL media to load
+}));
+
 const PORT = parseInt(process.env.PORT || "8080", 10);
+const APP_VERSION = process.env.npm_package_version || "1.0.0";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GEMINI_LIVE_MODEL = getGeminiLiveModel();
+const GEMINI_PHOTO_HAZARD_MODEL = (process.env.GEMINI_PHOTO_HAZARD_MODEL || "gemini-2.5-flash").trim();
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
 const IS_PROD = process.env.NODE_ENV === "production";
+const NODE_ENV = process.env.NODE_ENV || "development";
 const STORAGE_PROVIDER = process.env.STORAGE_PROVIDER || "local";
 const AUTH_RATE_LIMIT_PROVIDER = (process.env.AUTH_RATE_LIMIT_PROVIDER || "local").toLowerCase() as "local" | "upstash";
 const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const AUTH_RATE_LIMIT_MAX_REQUESTS = Number(process.env.AUTH_RATE_LIMIT_MAX_REQUESTS || 20);
 const AUTH_RATE_LIMIT_MAX_PER_EMAIL = Number(process.env.AUTH_RATE_LIMIT_MAX_PER_EMAIL || 8);
 const AUTH_TOKEN_RETENTION_HOURS = Number(process.env.AUTH_TOKEN_RETENTION_HOURS || 48);
-const AUTH_MAINTENANCE_KEY = process.env.AUTH_MAINTENANCE_KEY || "";
+const CSRF_HEADER_VALUE = "same-origin";
 
 if (!GEMINI_API_KEY) {
   console.warn("WARNING: GEMINI_API_KEY not set.");
@@ -83,13 +112,33 @@ const resolveStorageAdapter = (): StorageAdapter => {
 
 const storage = resolveStorageAdapter();
 
+// ---------------------------------------------------------------------------
+// Core middleware
+// ---------------------------------------------------------------------------
+
 app.use(cors({
   origin: process.env.ALLOWED_ORIGIN || "http://localhost:5173",
   credentials: true,
 }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "12mb" }));
 app.use(cookieParser(process.env.AUTH_SESSION_SECRET || "dev-only-secret"));
 app.use(attachAuthUser);
+app.use((req, res, next) => {
+  if (!req.authUser || req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    next();
+    return;
+  }
+  if (req.headers["x-hfe-csrf"] !== CSRF_HEADER_VALUE) {
+    res.status(403).json({ error: "CSRF protection failed." });
+    return;
+  }
+  next();
+});
+
+// ---------------------------------------------------------------------------
+// Evidence file serving (local storage only)
+// ---------------------------------------------------------------------------
+
 app.get(
   "/evidence/:userId/:sessionId/:roomType/:filename",
   requireAuth,
@@ -118,292 +167,68 @@ app.get(
   }
 );
 
+// ---------------------------------------------------------------------------
+// Health / readiness probes
+// ---------------------------------------------------------------------------
+
 app.get("/health", async (_req, res) => {
   try {
     await db.healthCheck();
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    res.json({ status: "ok", version: APP_VERSION, time: new Date().toISOString() });
   } catch {
-    res.status(503).json({ status: "error", timestamp: new Date().toISOString() });
+    res.status(503).json({ status: "error", version: APP_VERSION, time: new Date().toISOString() });
   }
 });
 
-const applyAuthRateLimit = async (
-  req: express.Request,
-  res: express.Response,
-  email: string | undefined,
-  strictOnProviderError: boolean
-): Promise<boolean> => {
-  const ip = clientIpFromRequest(req.ip, typeof req.headers["x-forwarded-for"] === "string" ? req.headers["x-forwarded-for"] : undefined);
-  const result = await sharedAuthLimiter.enforce({
-    endpoint: req.path,
-    ip,
-    email,
-    strictOnProviderError,
-  });
-  if (!result.allowed) {
-    console.warn(`[AUTH] rate limit hit path=${req.path} ip=${ip}${email ? ` email=${email}` : ""}`);
-    res.setHeader("Retry-After", String(result.retryAfterSec));
-    res.status(429).json({ error: "Too many auth requests. Please wait and try again." });
-    return false;
-  }
-  return true;
-};
-
-const runCleanupWithLogs = async () => {
-  const startedAt = new Date().toISOString();
-  console.info(`[AUTH] cleanup start at=${startedAt}`);
-  const result = await runAuthCleanup(AUTH_TOKEN_RETENTION_HOURS);
-  const finishedAt = new Date().toISOString();
-  console.info(`[AUTH] cleanup done at=${finishedAt} expiredSessions=${result.expiredSessionsDeleted} expiredTokens=${result.expiredTokensDeleted} usedTokens=${result.usedTokensDeleted}`);
-  return { startedAt, finishedAt, result };
-};
-
-const resolveReportEvidenceUrls = async (report: ReportPayload): Promise<ReportPayload> => {
-  const roomBreakdown = await Promise.all(
-    report.roomBreakdown.map(async (room) => ({
-      ...room,
-      hazards: await Promise.all(
-        room.hazards.map(async (hazard) => ({
-          ...hazard,
-          evidenceImagePath: hazard.evidenceImagePath
-            ? await storage.resolveEvidenceUrl(hazard.evidenceImagePath)
-            : hazard.evidenceImagePath,
-        }))
-      ),
-    }))
-  );
-  const evidenceImages = await Promise.all(
-    report.evidenceImages.map(async (image) => ({
-      ...image,
-      imagePath: await storage.resolveEvidenceUrl(image.imagePath),
-    }))
-  );
-  return {
-    ...report,
-    roomBreakdown,
-    evidenceImages,
+app.get("/ready", async (_req, res) => {
+  const checks = {
+    database: false,
+    gemini: Boolean(GEMINI_API_KEY),
+    authSecret: Boolean(process.env.AUTH_SESSION_SECRET && process.env.AUTH_SESSION_SECRET !== "dev-only-secret"),
+    storage: STORAGE_PROVIDER === "gcs"
+      ? Boolean(process.env.GCS_BUCKET_NAME)
+      : Boolean(process.env.LOCAL_STORAGE_BASE_PATH || !IS_PROD),
+    allowedOrigin: Boolean(process.env.ALLOWED_ORIGIN || !IS_PROD),
+    sentry: Boolean(process.env.SENTRY_DSN || !IS_PROD),
   };
-};
-
-app.post("/api/auth/register", async (req, res) => {
   try {
-    const email = String(req.body.email ?? "").trim().toLowerCase();
-    const name = req.body.name ? String(req.body.name) : undefined;
-    if (!(await applyAuthRateLimit(req, res, email, false))) return;
-    if (!email.includes("@")) return res.status(400).json({ error: "Valid email required." });
-    await authService.register(email, name);
-    console.info(`[AUTH] register/request-login for ${email}`);
-    return res.status(201).json({ ok: true });
-  } catch (error) {
-    return res.status(500).json({ error: "Unable to process request right now." });
+    await db.healthCheck();
+    checks.database = true;
+  } catch {
+    checks.database = false;
   }
-});
-
-app.post("/api/auth/request-login", async (req, res) => {
-  try {
-    const email = String(req.body.email ?? "").trim().toLowerCase();
-    if (!(await applyAuthRateLimit(req, res, email, false))) return;
-    if (!email.includes("@")) return res.status(400).json({ error: "Valid email required." });
-    await authService.requestLogin(email);
-    console.info(`[AUTH] request-login for ${email}`);
-    return res.json({ ok: true });
-  } catch (error) {
-    return res.status(500).json({ error: "Unable to process request right now." });
-  }
-});
-
-app.post("/api/auth/verify", async (req, res) => {
-  try {
-    const email = String(req.body.email ?? "").trim().toLowerCase();
-    const code = String(req.body.code ?? "");
-    if (!(await applyAuthRateLimit(req, res, email, true))) return;
-    if (!email || !code) return res.status(400).json({ error: "Email and code are required." });
-    const verified = await authService.verifyLogin(email, code);
-    res.cookie(AUTH_COOKIE_NAME, verified.token, {
-      httpOnly: true,
-      secure: IS_PROD,
-      sameSite: "lax",
-      path: "/",
-      expires: new Date(verified.expiresAt),
-    });
-    console.info(`[AUTH] verify success email=${email}`);
-    return res.json({ user: verified.user });
-  } catch (error) {
-    console.warn(`[AUTH] verify failed email=${String(req.body?.email ?? "")}`);
-    return res.status(400).json({ error: "Invalid or expired verification code." });
-  }
-});
-
-app.get("/api/auth/me", async (req, res) => {
-  if (!req.authUser) return res.status(401).json({ user: null });
-  return res.json({ user: req.authUser });
-});
-
-app.post("/api/auth/logout", async (req, res) => {
-  const token = req.cookies?.[AUTH_COOKIE_NAME];
-  if (token) await db.deleteSessionToken(token);
-  res.clearCookie(AUTH_COOKIE_NAME, { path: "/" });
-  console.info("[AUTH] logout");
-  return res.json({ ok: true });
-});
-
-app.post("/api/maintenance/auth-cleanup", async (req, res) => {
-  const key = req.headers["x-maintenance-key"];
-  if (!AUTH_MAINTENANCE_KEY || key !== AUTH_MAINTENANCE_KEY) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  try {
-    const cleanup = await runCleanupWithLogs();
-    return res.json(cleanup);
-  } catch (error) {
-    console.error(`[AUTH] cleanup failed: ${String(error)}`);
-    return res.status(500).json({ error: "Cleanup failed." });
-  }
-});
-
-app.post("/api/auth/cleanup", async (req, res) => {
-  const key = req.headers["x-maintenance-key"];
-  if (!AUTH_MAINTENANCE_KEY || key !== AUTH_MAINTENANCE_KEY) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  try {
-    const cleanup = await runCleanupWithLogs();
-    return res.json(cleanup);
-  } catch (error) {
-    console.error(`[AUTH] cleanup failed: ${String(error)}`);
-    return res.status(500).json({ error: "Cleanup failed." });
-  }
-});
-
-app.get("/api/sessions", requireAuth, async (req, res) => {
-  const sessions = await db.listSessionsForUser(req.authUser!.id);
-  return res.json({ sessions });
-});
-
-app.post("/api/sessions", requireAuth, async (req, res) => {
-  const body = req.body as {
-    city?: string;
-    residentAge?: number;
-    mobilityAid?: "none" | "cane" | "walker" | "wheelchair";
-    fallHistory?: number;
-    nightBathroomTrips?: boolean;
-  };
-  const home = await db.ensureHomeForUser(req.authUser!.id, body.city);
-  const session = await db.createSession({
-    userId: req.authUser!.id,
-    homeId: home.id,
-    residentAge: body.residentAge ?? 70,
-    mobilityAid: body.mobilityAid ?? "none",
-    fallHistory: body.fallHistory ?? 0,
-    nightBathroomTrips: !!body.nightBathroomTrips,
-    city: body.city,
-    overallRiskLevel: undefined,
-  });
-  for (const roomType of REQUIRED_ROOM_ORDER) {
-    await db.getOrCreateRoomScan(session.id, roomType);
-  }
-  res.status(201).json({ session });
-});
-
-app.get("/api/sessions/:id", requireAuth, async (req, res) => {
-  const session = await db.getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  return res.json({
-    session,
-    roomScans: await db.listRoomScans(session.id),
-    observations: await db.listObservations(session.id),
+  const ready = Object.values(checks).every(Boolean);
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ready" : "not_ready",
+    version: APP_VERSION,
+    checks,
+    time: new Date().toISOString(),
   });
 });
 
-app.post("/api/sessions/:id/context", requireAuth, async (req, res) => {
-  const existing = await db.getSession(req.params.id);
-  if (!existing) return res.status(404).json({ error: "Session not found." });
-  if (existing.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  const update = req.body as SessionContextUpdate;
-  const session = await db.updateSessionContext(req.params.id, update);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  return res.json({ session });
-});
+// ---------------------------------------------------------------------------
+// API route modules
+// ---------------------------------------------------------------------------
 
-app.post("/api/sessions/:id/observations", requireAuth, async (req, res) => {
-  const session = await db.getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  const observation = await db.createObservation({
-    sessionId: session.id,
-    roomScanId: req.body.roomScanId,
-    roomType: req.body.roomType,
-    hazardType: req.body.hazardType,
-    severityHint: req.body.severityHint ?? "medium",
-    evidenceImagePath: req.body.evidenceImagePath,
-    modelNote: req.body.modelNote ?? "",
-    followUpNeeded: !!req.body.followUpNeeded,
-    status: req.body.status ?? "candidate",
-  });
-  return res.status(201).json({ observation });
-});
+// Auth routes: /api/auth/*
+app.use("/api/auth", createAuthRouter(authService, sharedAuthLimiter));
+// Maintenance routes: /api/maintenance/*
+app.use("/api/maintenance", createMaintenanceRouter());
+// Authenticated contractor lead submission: /api/leads/*
+app.use("/api/leads", createLeadsRouter(authService, sharedAuthLimiter));
 
-app.post("/api/sessions/:id/rooms/:roomType/progress", requireAuth, async (req, res) => {
-  const session = await db.getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  const roomType = req.params.roomType as RoomType;
-  const roomScan = await db.getOrCreateRoomScan(session.id, roomType);
-  roomScan.capturedViews = req.body.capturedViews ?? roomScan.capturedViews;
-  roomScan.missingViews = req.body.missingViews ?? roomScan.missingViews;
-  roomScan.coverageStatus = req.body.coverageStatus ?? roomScan.coverageStatus;
-  roomScan.notes = req.body.notes ?? roomScan.notes;
-  await db.saveRoomScan(roomScan);
-  return res.json({ roomScan });
-});
+app.use("/api/sessions", createSessionsRouter(storage, GEMINI_API_KEY, GEMINI_PHOTO_HAZARD_MODEL, GOOGLE_PLACES_API_KEY));
+app.use("/api/reports", createReportsRouter());
+app.use("/api/admin", createAdminRouter());
+app.use("/api/service-requests", createServiceRequestsRouter());
 
-app.post("/api/sessions/:id/finalize", requireAuth, async (req, res) => {
-  const session = await db.getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  const assessment = await runAssessmentEngine(session);
-  session.status = "completed";
-  session.endedAt = new Date().toISOString();
-  session.overallRiskLevel = assessment.overallRiskLevel;
-  await db.updateSession(session);
-  const report = buildReportPayload(assessment);
-  await persistReportPayload(report, req.authUser!.id);
-  const resolved = await resolveReportEvidenceUrls(report);
-  return res.json({ assessment, report: resolved });
-});
+// Public routes (affiliate-clicks, contractor-leads, beta-waitlist, analytics/events, referrals)
+// mounted at /api so routes inside use their full relative paths
+app.use("/api", createPublicRouter(authService, sharedAuthLimiter));
 
-app.post("/api/sessions/:id/assessment", requireAuth, async (req, res) => {
-  const session = await db.getSession(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found." });
-  if (session.userId !== req.authUser!.id) return res.status(403).json({ error: "Forbidden" });
-  const assessment = await runAssessmentEngine(session);
-  return res.json({ assessment });
-});
-
-app.get("/api/sessions/:id/report", requireAuth, async (req, res) => {
-  const report = await db.getReport(req.params.id, req.authUser!.id);
-  if (!report) return res.status(404).json({ error: "Report not found." });
-  const resolved = await resolveReportEvidenceUrls(report);
-  return res.json({ report: resolved });
-});
-
-app.get("/api/reports", requireAuth, async (req, res) => {
-  const reports = await db.listReportsForUser(req.authUser!.id);
-  return res.json({
-    reports: reports.map((item) => {
-      const report = item.reportJson as ReportPayload;
-      return {
-        sessionId: item.sessionId,
-        createdAt: item.createdAt,
-        riskLevel: report?.overallRiskSummary?.level,
-        hazardCount: report?.overallRiskSummary?.totalHazards,
-        roomCount: report?.roomBreakdown?.length ?? 0,
-        summary: report?.overallRiskSummary?.summary ?? "",
-      };
-    }),
-  });
-});
+// ---------------------------------------------------------------------------
+// Static file serving (must come after all API routes)
+// ---------------------------------------------------------------------------
 
 const clientBuildPath = path.join(__dirname, "../../client/dist");
 app.use(express.static(clientBuildPath));
@@ -411,7 +236,9 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(clientBuildPath, "index.html"));
 });
 
-Sentry.setupExpressErrorHandler(app);
+// ---------------------------------------------------------------------------
+// WebSocket server
+// ---------------------------------------------------------------------------
 
 const parseCookieHeader = (value: string | undefined): Record<string, string> => {
   if (!value) return {};
@@ -447,6 +274,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     const orchestrator = await SessionOrchestrator.resume({
       ws,
       geminiApiKey: GEMINI_API_KEY,
+      liveModel: GEMINI_LIVE_MODEL,
       storage,
       session: existingSession,
       roomScans,
@@ -501,6 +329,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
           const orchestrator = await SessionOrchestrator.create({
             ws,
             geminiApiKey: GEMINI_API_KEY,
+            liveModel: GEMINI_LIVE_MODEL,
             storage,
             userId: authUser.id,
             profile: {
@@ -510,6 +339,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
               nightBathroomTrips: Boolean(profile.nightBathroomTrips),
               city: typeof profile.city === "string" ? profile.city : undefined,
               roomSequence: safeRoomSequence,
+              seniorProfile: parseSeniorProfile(profile.seniorProfile),
+              pilotCohortId: optionalString(profile.pilotCohortId, 120),
+              referralId: optionalString(profile.referralId, 120),
+              consent: parseConsentState(profile.consent),
             },
           });
           orchestrators.set(ws, orchestrator);
@@ -529,9 +362,19 @@ wss.on("connection", async (ws: WebSocket, req) => {
             ws.send(JSON.stringify({ type: "error", payload: { message: "No active session." } }));
             break;
           }
+          if (message.payload?.allowIncomplete !== true && !orchestrator.canFinalizeReport()) {
+            ws.send(JSON.stringify({
+              type: "error",
+              payload: {
+                message: "Assessment coverage is incomplete. Review more rooms or confirm that you want an incomplete report.",
+                code: "INCOMPLETE_ASSESSMENT",
+              },
+            }));
+            break;
+          }
           const report = await orchestrator.finalizeSession();
           if (report) {
-            const resolved = await resolveReportEvidenceUrls(report);
+            const resolved = await resolveReportEvidenceUrls(report, storage);
             ws.send(JSON.stringify({
               type: "report_ready",
               payload: {
@@ -563,7 +406,13 @@ wss.on("connection", async (ws: WebSocket, req) => {
   });
 });
 
-server.listen(PORT, () => console.log(`HFE server on port ${PORT}`));
+// ---------------------------------------------------------------------------
+// Server startup
+// ---------------------------------------------------------------------------
+
+server.listen(PORT, () => {
+  console.log(`[BOOT] HFE server starting mode=${NODE_ENV} port=${PORT} version=${APP_VERSION}`);
+});
 
 process.on("SIGTERM", () => {
   for (const orchestrator of orchestrators.values()) {
@@ -572,6 +421,7 @@ process.on("SIGTERM", () => {
   server.close(() => process.exit(0));
 });
 
+// Auth rate limiter GC
 setInterval(() => {
   const gcCount = sharedAuthLimiter.gc();
   if (gcCount > 0) {
@@ -579,7 +429,13 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-void runCleanupWithLogs()
-  .catch((error) => {
-    console.error(`[AUTH] startup cleanup failed: ${String(error)}`);
-  });
+// Auth cleanup cron (runs on startup and periodically via external cron or Cloud Scheduler)
+void (async () => {
+  const startedAt = new Date().toISOString();
+  console.info(`[AUTH] cleanup start at=${startedAt}`);
+  const result = await runAuthCleanup(AUTH_TOKEN_RETENTION_HOURS);
+  const finishedAt = new Date().toISOString();
+  console.info(`[AUTH] cleanup done at=${finishedAt} expiredSessions=${result.expiredSessionsDeleted} expiredTokens=${result.expiredTokensDeleted} usedTokens=${result.usedTokensDeleted}`);
+})().catch((error) => {
+  console.error(`[AUTH] startup cleanup failed: ${String(error)}`);
+});

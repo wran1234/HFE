@@ -1,4 +1,28 @@
 import { useEffect, useRef, useState, useCallback, useReducer } from "react";
+
+// ── SpeechRecognition types ───────────────────────────────────────────────────
+
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
+}
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: Event) => void) | null;
+  onend: (() => void) | null;
+}
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  }
+}
 import {
   Video,
   VideoOff,
@@ -75,10 +99,15 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<HFEWebSocketClient | null>(null);
+  const wsUnsubRef = useRef<(() => void) | null>(null);
   const frameTimerRef = useRef<number | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const snapshotsRef = useRef<SnapshotData[]>([]);
   const aiSummaryRef = useRef<string>("");
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioNextTimeRef = useRef(0);
+  const aiAudioEndTimerRef = useRef<number | null>(null);
+  const aiSpeakingRef = useRef(false);
 
   const roomSequence = buildRoomSequence(profile);
   const [roomState, dispatchRoom] = useReducer(roomReducer, {
@@ -97,10 +126,11 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   const [isAiTyping, setIsAiTyping] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [missingViews, setMissingViews] = useState<string[]>([]);
+  const [completionScore, setCompletionScore] = useState(0);
+  const [privacyConsent, setPrivacyConsent] = useState(false);
   const [snapshotFlash, setSnapshotFlash] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const speechRef = useRef<any>(null);
+  const speechRef = useRef<SpeechRecognition | null>(null);
   const speechActiveRef = useRef(false); // true when we WANT recognition running
 
   const addMessage = useCallback((role: ChatMessage["role"], text: string) => {
@@ -113,6 +143,69 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
         timestamp: Date.now(),
       },
     ]);
+  }, []);
+
+  const ensureAudioContext = useCallback(async () => {
+    const AudioContextCtor =
+      window.AudioContext ??
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContextCtor();
+      audioNextTimeRef.current = audioContextRef.current.currentTime;
+    }
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+    return audioContextRef.current;
+  }, []);
+
+  const playAiAudioChunk = useCallback(async (base64Audio: string, mimeType: string) => {
+    const audioContext = await ensureAudioContext();
+    if (!audioContext) return;
+
+    if (aiAudioEndTimerRef.current !== null) {
+      window.clearTimeout(aiAudioEndTimerRef.current);
+      aiAudioEndTimerRef.current = null;
+    }
+    aiSpeakingRef.current = true;
+    speechRef.current?.stop();
+    setIsListening(false);
+
+    const rateMatch = /rate=(\d+)/i.exec(mimeType);
+    const sampleRate = rateMatch ? Number(rateMatch[1]) : 24000;
+    const binary = atob(base64Audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const frameCount = Math.floor(bytes.byteLength / 2);
+    if (frameCount <= 0) return;
+    const buffer = audioContext.createBuffer(1, frameCount, sampleRate);
+    const channel = buffer.getChannelData(0);
+    const view = new DataView(bytes.buffer);
+    for (let index = 0; index < frameCount; index += 1) {
+      channel[index] = view.getInt16(index * 2, true) / 32768;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    const startAt = Math.max(audioContext.currentTime + 0.03, audioNextTimeRef.current);
+    source.start(startAt);
+    audioNextTimeRef.current = startAt + buffer.duration;
+  }, [ensureAudioContext]);
+
+  const stopAiAudio = useCallback(() => {
+    if (aiAudioEndTimerRef.current !== null) {
+      window.clearTimeout(aiAudioEndTimerRef.current);
+      aiAudioEndTimerRef.current = null;
+    }
+    aiSpeakingRef.current = false;
+    if (audioContextRef.current) {
+      audioNextTimeRef.current = audioContextRef.current.currentTime;
+    }
   }, []);
 
   useEffect(() => {
@@ -178,17 +271,34 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const startAssessment = async () => {
+    if (!privacyConsent) {
+      addMessage("system", "Please confirm camera and evidence consent before starting.");
+      return;
+    }
+    const consentedProfile: UserProfile = {
+      ...profile,
+      consent: {
+        consentAccepted: true,
+        consentAcceptedAt: profile.consent?.consentAcceptedAt ?? new Date().toISOString(),
+        consentVersion: profile.consent?.consentVersion ?? "parent-safety-consent-v1",
+        recordingPermissionConfirmed: true,
+        shareWithCareCoordinator: Boolean(profile.consent?.shareWithCareCoordinator),
+        shareWithContractor: Boolean(profile.consent?.shareWithContractor),
+        shareWithInsurer: Boolean(profile.consent?.shareWithInsurer),
+      },
+    };
     setStatus("connecting");
     addMessage("system", "Connecting to AI safety expert...");
+    await ensureAudioContext();
 
     const client = new HFEWebSocketClient();
     wsRef.current = client;
 
-    client.onMessage((msg) => {
+    wsUnsubRef.current = client.onMessage((msg) => {
       switch (msg.type) {
         case "connected":
           // Immediately start session with profile
-          client.startSession(profile, roomSequence);
+          client.startSession(consentedProfile, roomSequence);
           break;
 
         case "session_started":
@@ -237,6 +347,14 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           break;
         }
 
+        case "ai_audio_chunk": {
+          void playAiAudioChunk(
+            String(msg.payload.data ?? ""),
+            String(msg.payload.mimeType ?? "audio/pcm;rate=24000")
+          );
+          break;
+        }
+
         case "ai_typing": {
           setIsAiTyping(true);
           break;
@@ -264,6 +382,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
         case "inspection_state":
           setMissingViews((msg.payload.missingViews ?? []) as string[]);
+          setCompletionScore(Number(msg.payload.completionScore ?? 0));
           break;
 
         case "follow_up_prompt": {
@@ -308,6 +427,20 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
         case "turn_complete":
           setIsAiTyping(false);
+          {
+            const audioContext = audioContextRef.current;
+            const delayMs = audioContext
+              ? Math.max(150, (audioNextTimeRef.current - audioContext.currentTime) * 1000 + 200)
+              : 500;
+            if (aiAudioEndTimerRef.current !== null) {
+              window.clearTimeout(aiAudioEndTimerRef.current);
+            }
+            aiAudioEndTimerRef.current = window.setTimeout(() => {
+              aiSpeakingRef.current = false;
+              aiAudioEndTimerRef.current = null;
+              if (speechActiveRef.current) startContinuousSpeech();
+            }, delayMs);
+          }
           break;
 
         case "report_ready": {
@@ -322,6 +455,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
         }
 
         case "error":
+          stopAiAudio();
           if (String(msg.payload.message ?? "") === "Internal server error.") {
             addMessage("system", "Something went wrong. Please end the session and try again.");
           } else {
@@ -340,8 +474,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
       startFrameCapture();
       dispatchRoom({ type: "RESET", firstRoom: roomSequence[0] ?? "entryway" });
       // Auto-start voice input — seamless conversation from the start
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
       if (SR && !isIOS) {
         startContinuousSpeech();
@@ -350,8 +483,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           ? "Voice input isn't supported on iOS. Type your messages, or use Chrome on Android for hands-free voice."
           : "Voice input not available in this browser. Use Chrome or Edge for hands-free voice.");
       }
-    } catch {
-      addMessage("system", "Failed to connect. Is the server running?");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to connect. Is the server running?";
+      addMessage("system", message);
       setStatus("idle");
     }
   };
@@ -366,8 +500,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const startContinuousSpeech = useCallback(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SR) return;
 
     speechActiveRef.current = true;
@@ -379,8 +512,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
     recognition.onstart = () => setIsListening(true);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       const transcript = (event.results[0]?.[0]?.transcript ?? "").trim();
       if (transcript) {
         // Direct call — don't go through textInput state
@@ -401,9 +533,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     recognition.onerror = () => {
       setIsListening(false);
       // Restart after transient errors (no-speech, audio-capture) if still active
-      if (speechActiveRef.current) {
+      if (speechActiveRef.current && !aiSpeakingRef.current) {
         setTimeout(() => {
-          if (speechActiveRef.current) startContinuousSpeech();
+          if (speechActiveRef.current && !aiSpeakingRef.current) startContinuousSpeech();
         }, 800);
       }
     };
@@ -411,9 +543,9 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     recognition.onend = () => {
       setIsListening(false);
       // Auto-restart as long as the session is active
-      if (speechActiveRef.current) {
+      if (speechActiveRef.current && !aiSpeakingRef.current) {
         setTimeout(() => {
-          if (speechActiveRef.current) startContinuousSpeech();
+          if (speechActiveRef.current && !aiSpeakingRef.current) startContinuousSpeech();
         }, 300);
       }
     };
@@ -438,8 +570,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     if (speechActiveRef.current) {
       stopSpeech();
     } else {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+      const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
       if (!SR) {
         addMessage("system", "Speech recognition not supported. Use Chrome or Edge.");
         return;
@@ -449,16 +580,23 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
   };
 
   const generateReport = () => {
+    const allowIncomplete = completionScore < 60
+      ? window.confirm("This assessment is incomplete. The report may miss hazards in rooms or views not captured. Generate it anyway?")
+      : false;
+    if (completionScore < 60 && !allowIncomplete) return;
     setStatus("ending");
     addMessage("system", "Completing assessment and generating your safety report...");
-    wsRef.current?.requestReport();
+    wsRef.current?.requestReport(allowIncomplete);
     setIsAiTyping(true);
   };
 
   const stopAssessment = () => {
     stopSpeech();
+    stopAiAudio();
     stopFrameCapture();
     stopCamera();
+    wsUnsubRef.current?.();
+    wsUnsubRef.current = null;
     wsRef.current?.endSession();
     wsRef.current?.close();
     wsRef.current = null;
@@ -471,8 +609,13 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
     return () => {
       speechActiveRef.current = false;
       speechRef.current?.stop();
+      stopAiAudio();
+      void audioContextRef.current?.close();
+      audioContextRef.current = null;
       stopFrameCapture();
       stopCamera();
+      wsUnsubRef.current?.();
+      wsUnsubRef.current = null;
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -514,7 +657,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                 onClick={() => wsRef.current?.sendTextMessage(`Let's move to the next room.`)}
                 className="ml-auto text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
               >
-                Next room <ChevronRight className="w-3 h-3" />
+                Next room <ChevronRight aria-hidden="true" className="w-3 h-3" />
               </button>
             )}
           </div>
@@ -541,7 +684,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
 
             {!isCameraOn && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-500">
-                <VideoOff className="w-16 h-16" />
+                <VideoOff aria-hidden="true" className="w-16 h-16" />
                 <p className="text-lg font-medium">Camera is off</p>
                 {status === "idle" && (
                   <p className="text-sm">Click "Start Assessment" below</p>
@@ -558,15 +701,15 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                   </div>
                   {isMicOn && (
                     <div className="flex items-center gap-1.5 bg-slate-900/80 text-slate-300 text-xs px-2 py-1 rounded-full border border-slate-700">
-                      <Volume2 className="w-3 h-3" />
+                      <Volume2 aria-hidden="true" className="w-3 h-3" />
                     </div>
                   )}
                 </div>
 
                 {snapshotFlash && (
-                  <div className="absolute inset-0 bg-white/20 flex items-center justify-center animate-fade-in pointer-events-none">
+                  <div className="absolute inset-0 bg-white/20 flex items-center justify-center motion-safe:animate-fade-in pointer-events-none" aria-live="polite" aria-atomic="true">
                     <div className="flex items-center gap-2 bg-white/90 text-slate-900 px-4 py-2 rounded-full text-sm font-semibold">
-                      <Camera className="w-4 h-4" />
+                      <Camera aria-hidden="true" className="w-4 h-4" />
                       Snapshot captured
                     </div>
                   </div>
@@ -576,7 +719,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                   <div className="absolute top-3 right-3 flex flex-col items-end gap-1">
                     {highCount > 0 && (
                       <div className="badge-high text-[10px]">
-                        <AlertTriangle className="w-3 h-3 mr-1" />
+                        <AlertTriangle aria-hidden="true" className="w-3 h-3 mr-1" />
                         {highCount} urgent
                       </div>
                     )}
@@ -593,15 +736,28 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           <div className="card">
             <div className="flex flex-wrap items-center gap-3">
               {status === "idle" && (
-                <button onClick={startAssessment} className="btn-primary">
-                  <Video className="w-4 h-4" />
+                <label className="flex w-full items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={privacyConsent}
+                    onChange={(e) => setPrivacyConsent(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  <span>
+                    I understand this AI-assisted walkthrough uses my camera and may store evidence snapshots for my report. HFE is not a medical, emergency, occupational therapy, or contractor assessment, and I can stop the session at any time.
+                  </span>
+                </label>
+              )}
+              {status === "idle" && (
+                <button onClick={startAssessment} disabled={!privacyConsent} className={`btn-primary ${!privacyConsent ? "opacity-60 cursor-not-allowed" : ""}`}>
+                  <Video aria-hidden="true" className="w-4 h-4" />
                   Start Assessment
                 </button>
               )}
 
               {status === "connecting" && (
                 <button disabled className="btn-primary opacity-60 cursor-not-allowed">
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
                   Connecting...
                 </button>
               )}
@@ -623,27 +779,28 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                       }
                       setIsMicOn((v) => !v);
                     }}
+                    aria-pressed={isMicOn}
                     className={isMicOn ? "btn-secondary" : "btn-danger"}
                   >
-                    {isMicOn ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                    {isMicOn ? <Mic aria-hidden="true" className="w-4 h-4" /> : <MicOff aria-hidden="true" className="w-4 h-4" />}
                     {isMicOn ? "Mute" : "Unmute"}
                   </button>
 
                   <button onClick={generateReport} className="btn-primary">
-                    <FileText className="w-4 h-4" />
+                    <FileText aria-hidden="true" className="w-4 h-4" />
                     Generate Report
                   </button>
 
                   <button onClick={stopAssessment} className="btn-secondary">
-                    <StopCircle className="w-4 h-4" />
+                    <StopCircle aria-hidden="true" className="w-4 h-4" />
                     Stop
                   </button>
                 </>
               )}
 
               {status === "ending" && (
-                <div className="flex items-center gap-2 text-brand-400">
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                <div className="flex items-center gap-2 text-brand-400" aria-live="polite">
+                  <Loader2 aria-hidden="true" className="w-4 h-4 animate-spin" />
                   <span className="text-sm font-medium">
                     Analyzing findings and building report...
                   </span>
@@ -656,19 +813,21 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
               <div className="flex gap-2 mt-4">
                 <button
                   onClick={toggleSpeech}
-                  title={speechActiveRef.current ? "Mute voice input" : "Enable voice input"}
-                  className={`py-2.5 px-3 rounded-xl border font-medium text-sm transition-all ${
+                  aria-label={speechActiveRef.current ? "Mute voice input" : "Enable voice input"}
+                  aria-pressed={speechActiveRef.current}
+                  className={`py-2.5 px-3 rounded-xl border font-medium text-sm motion-safe:transition-all ${
                     isListening
-                      ? "bg-brand-600 border-brand-500 text-white animate-pulse"
+                      ? "bg-brand-600 border-brand-500 text-white motion-safe:animate-pulse"
                       : speechActiveRef.current
                       ? "bg-slate-700 border-slate-600 text-slate-300"
                       : "bg-slate-800 border-slate-700 text-slate-500 hover:text-white hover:border-slate-600"
                   }`}
                 >
-                  {speechActiveRef.current ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                  {speechActiveRef.current ? <Mic aria-hidden="true" className="w-4 h-4" /> : <MicOff aria-hidden="true" className="w-4 h-4" />}
                 </button>
                 <input
                   type="text"
+                  aria-label="Message to AI safety expert"
                   value={textInput}
                   onChange={(e) => setTextInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && sendMessage()}
@@ -678,9 +837,10 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                 <button
                   onClick={() => sendMessage()}
                   disabled={!textInput.trim()}
+                  aria-label="Send message"
                   className="btn-primary py-2.5 px-4 disabled:opacity-40"
                 >
-                  <Send className="w-4 h-4" />
+                  <Send aria-hidden="true" className="w-4 h-4" />
                 </button>
               </div>
             )}
@@ -692,20 +852,20 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
           {/* AI Chat */}
           <div className="card flex flex-col" style={{ maxHeight: "380px" }}>
             <div className="flex items-center gap-2 mb-3">
-              <div className="w-2 h-2 bg-brand-400 rounded-full animate-pulse-slow" />
+              <div aria-hidden="true" className="w-2 h-2 bg-brand-400 rounded-full motion-safe:animate-pulse-slow" />
               <h3 className="text-sm font-semibold text-slate-300">AI Safety Expert</h3>
               {sessionId && (
                 <span className="text-[10px] text-slate-500">Session {sessionId.slice(-6)}</span>
               )}
               {snapshotsRef.current.length > 0 && (
                 <span className="ml-auto text-xs text-slate-500">
-                  <Camera className="w-3 h-3 inline mr-1" />
+                  <Camera aria-hidden="true" className="w-3 h-3 inline mr-1" />
                   {snapshotsRef.current.length} photo{snapshotsRef.current.length !== 1 ? "s" : ""}
                 </span>
               )}
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-0">
+            <div aria-live="polite" aria-label="AI Safety Expert conversation" className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-0">
               {messages.length === 0 && (
                 <p className="text-slate-600 text-sm text-center py-8">
                   Start the assessment to begin
@@ -715,7 +875,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
               {messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`animate-fade-in ${
+                  className={`motion-safe:animate-fade-in ${
                     msg.role === "system"
                       ? "text-slate-500 text-xs text-center italic"
                       : msg.role === "user"
@@ -738,11 +898,11 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
               ))}
 
               {isAiTyping && (
-                <div className="flex items-center gap-2 text-slate-500 text-sm">
-                  <div className="flex gap-1">
-                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" />
+                <div className="flex items-center gap-2 text-slate-500 text-sm" role="status" aria-label="AI is analyzing">
+                  <div aria-hidden="true" className="flex gap-1">
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full motion-safe:animate-bounce [animation-delay:-0.3s]" />
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full motion-safe:animate-bounce [animation-delay:-0.15s]" />
+                    <div className="w-1.5 h-1.5 bg-slate-500 rounded-full motion-safe:animate-bounce" />
                   </div>
                   <span>AI is analyzing...</span>
                 </div>
@@ -761,14 +921,14 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
             <div className="overflow-y-auto space-y-2 flex-1">
               {observations.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 py-6 text-slate-600">
-                  <CheckCircle className="w-8 h-8" />
+                  <CheckCircle aria-hidden="true" className="w-8 h-8" />
                   <p className="text-xs text-center">No hazards yet</p>
                 </div>
               ) : (
                 observations.map((obs) => (
                   <div
                     key={obs.id}
-                    className="flex items-start gap-2 p-2.5 bg-slate-800/60 rounded-lg border border-slate-700/50 animate-slide-up"
+                    className="flex items-start gap-2 p-2.5 bg-slate-800/60 rounded-lg border border-slate-700/50 motion-safe:animate-slide-up"
                   >
                     <div className="flex flex-col items-start gap-1 shrink-0">
                       <span
@@ -783,7 +943,7 @@ export default function VideoAssistant({ profile, onReportReady }: VideoAssistan
                         {obs.adjustedSeverity}/10
                       </span>
                       {obs.snapshotBase64 && (
-                        <Camera className="w-3 h-3 text-brand-400" />
+                        <Camera aria-hidden="true" className="w-3 h-3 text-brand-400" />
                       )}
                     </div>
                     <div className="min-w-0">

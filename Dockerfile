@@ -16,6 +16,7 @@ COPY server/package.json server/package-lock.json* ./
 RUN npm install
 
 COPY server/ ./
+RUN npx prisma generate
 RUN npm run build
 
 # Stage 3: Production image

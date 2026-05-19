@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ShieldCheck,
   AlertTriangle,
@@ -21,44 +21,59 @@ import {
   Wallet,
   Star,
   User,
+  HeartHandshake,
+  ClipboardList,
+  Brain,
+  FileText,
 } from "lucide-react";
 import {
   HazardObservation,
   AssessmentReport,
   ROOM_NAMES,
   RoomId,
+  CareNote,
+  CareNoteAuthorRole,
+  CareNoteSummary,
+  CareNoteType,
+  IndependencePlanOwner,
+  IndependencePlanItem,
+  IndependencePlanPriority,
+  RecommendationActionStatus,
+  RecommendationEvidence,
+  RecommendationEvidenceType,
+  FollowUpCheckIn,
+  ServiceRequest,
+  ServiceRequestStatus,
+  SuggestedServiceRequest,
 } from "../lib/types";
 import { loadReport } from "../lib/reportSerializer";
 import { getShareableUrl, decodeReportFromHash } from "../lib/reportSerializer";
-import { fetchReport } from "../lib/apiClient";
+import {
+  addCareNote,
+  addRecommendationEvidence,
+  createServiceRequest,
+  fetchReport,
+  generateServiceRequestSuggestions,
+  getCareNoteSummary,
+  getPreventionSummary,
+  listFamilyFollowUps,
+  listServiceRequests,
+  listRecommendationEvidence,
+  listCareNotes,
+  submitFamilyFollowUp,
+  trackAnalyticsEvent,
+  updateRecommendationStatus,
+  updateServiceRequest,
+} from "../lib/apiClient";
 import { toAssessmentReport } from "../lib/reportTransform";
 import ShoppingList from "../components/ShoppingList";
 import ContractorScope from "../components/ContractorScope";
 import PremiumSection from "../components/PremiumSection";
+import ScoreRing from "../components/ScoreRing";
 import { loadProfile } from "../lib/userProfile";
-
-// ── Score ring ─────────────────────────────────────────────────────────────────
-
-function ScoreRing({ score }: { score: number }) {
-  const radius = 52;
-  const circ = 2 * Math.PI * radius;
-  const offset = circ - (score / 100) * circ;
-  const color = score >= 75 ? "#22c55e" : score >= 50 ? "#f59e0b" : "#ef4444";
-  return (
-    <div className="relative w-32 h-32">
-      <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
-        <circle cx="60" cy="60" r={radius} fill="none" stroke="#EBE5DA" strokeWidth="10" />
-        <circle cx="60" cy="60" r={radius} fill="none" stroke={color} strokeWidth="10"
-          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 1.2s ease" }} />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-extrabold text-warm-900">{score}</span>
-        <span className="text-xs text-warm-500">/100</span>
-      </div>
-    </div>
-  );
-}
+import ReportHeader from "../components/report/ReportHeader";
+import ReportTabBar from "../components/report/ReportTabBar";
+import type { TabId } from "../components/report/ReportTabBar";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -164,20 +179,20 @@ function HazardCard({ obs }: { obs: HazardObservation }) {
 
       <div className="grid sm:grid-cols-2 gap-4 mb-3">
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">HAZARD</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">What we noticed</p>
           <p className="text-sm text-warm-900 leading-relaxed">{obs.hazard}</p>
         </div>
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">WHY IT'S DANGEROUS</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">Why this matters</p>
           <p className="text-sm text-warm-700 leading-relaxed">{obs.risk}</p>
         </div>
         <div>
-          <p className="text-xs font-semibold text-warm-400 mb-1">RECOMMENDATION</p>
+          <p className="text-xs font-semibold text-warm-400 mb-1">What to do</p>
           <p className="text-sm text-warm-700 leading-relaxed">{obs.recommendation}</p>
         </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-warm-400">Fall Probability</span>
+            <span className="text-xs text-warm-400">Risk without action</span>
             <span className="text-sm font-bold text-red-600">{obs.fallProbability}%</span>
           </div>
           <div className="w-full bg-warm-200 rounded-full h-1.5">
@@ -188,7 +203,7 @@ function HazardCard({ obs }: { obs: HazardObservation }) {
           </div>
           <div className="flex items-center justify-between mt-1">
             <span className="text-xs text-warm-400">Risk Reduction if Fixed</span>
-            <span className="text-sm font-bold text-green-600">−{obs.riskReductionPercent}%</span>
+            <span className="text-sm font-bold text-green-600">{obs.riskReductionPercent != null ? `−${obs.riskReductionPercent}%` : "—"}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-warm-400">Estimated Cost</span>
@@ -218,30 +233,778 @@ function HazardCard({ obs }: { obs: HazardObservation }) {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
+const riskLabel: Record<string, string> = {
+  low: "Low",
+  moderate: "Moderate",
+  high: "High",
+  urgent: "Urgent",
+};
 
-type TabId = "overview" | "rooms" | "shopping" | "contractor" | "action" | "premium";
+const riskClass = (risk?: string) => {
+  if (risk === "urgent") return "bg-red-50 text-red-700 border-red-200";
+  if (risk === "high") return "bg-amber-50 text-amber-700 border-amber-200";
+  if (risk === "moderate") return "bg-blue-50 text-blue-700 border-blue-200";
+  return "bg-green-50 text-green-700 border-green-200";
+};
+
+const impactClass = (impact?: string) => {
+  if (impact === "high") return "bg-green-50 text-green-700 border-green-200";
+  if (impact === "medium") return "bg-blue-50 text-blue-700 border-blue-200";
+  return "bg-warm-50 text-warm-600 border-warm-200";
+};
+
+function EvidencePanel({
+  sessionId,
+  item,
+  onEvidenceAdded,
+}: {
+  sessionId?: string;
+  item: IndependencePlanItem;
+  onEvidenceAdded: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [evidence, setEvidence] = useState<RecommendationEvidence[]>([]);
+  const [evidenceType, setEvidenceType] = useState<RecommendationEvidenceType>("note");
+  const [note, setNote] = useState("");
+  const [role, setRole] = useState("family" as const);
+
+  useEffect(() => {
+    if (!open || !sessionId) return;
+    void listRecommendationEvidence(sessionId, item.id)
+      .then((response) => setEvidence(response.evidence))
+      .catch(() => undefined);
+  }, [open, sessionId, item.id]);
+
+  const submit = async () => {
+    if (!sessionId || !note.trim()) return;
+    const response = await addRecommendationEvidence(sessionId, item.id, {
+      evidenceType,
+      note,
+      uploadedByRole: role,
+    });
+    setEvidence((current) => [response.evidence, ...current]);
+    setNote("");
+    onEvidenceAdded(item.id);
+  };
+
+  return (
+    <div className="mt-3 border-t border-warm-200 pt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="text-xs font-semibold text-brand-700 hover:text-brand-800"
+      >
+        {open ? "Hide evidence timeline" : "Add evidence/update"}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <div className="grid sm:grid-cols-3 gap-2">
+            <select
+              value={evidenceType}
+              onChange={(e) => setEvidenceType(e.target.value as RecommendationEvidenceType)}
+              className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+            >
+              <option value="note">General note</option>
+              <option value="before_photo">Before photo / note</option>
+              <option value="after_photo">After photo / note</option>
+              <option value="contractor_update">Contractor update</option>
+              <option value="caregiver_update">Caregiver update</option>
+              <option value="other">Other</option>
+            </select>
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value as typeof role)}
+              className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+            >
+              <option value="family">Family</option>
+              <option value="caregiver">Caregiver</option>
+              <option value="contractor">Contractor</option>
+              <option value="admin">Admin</option>
+              <option value="other">Other</option>
+            </select>
+            <button type="button" onClick={submit} className="btn-secondary py-2 px-3 text-xs">Save update</button>
+          </div>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Add before/after note or service update. Image upload can be added later through existing evidence storage."
+            className="w-full border border-warm-200 rounded-xl px-3 py-2 text-sm min-h-20"
+          />
+          <div className="space-y-2">
+            {evidence.length === 0 ? (
+              <p className="text-xs text-warm-400">No evidence updates yet. Add a before note, after note, contractor update, or caregiver update so the family and care team can see follow-through.</p>
+            ) : evidence.map((entry) => (
+              <div key={entry.id} className="p-3 rounded-xl border border-warm-200 bg-warm-50">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                  <p className="text-xs font-semibold text-warm-700">{entry.evidenceType.replace(/_/g, " ")} · {entry.uploadedByRole}</p>
+                  <span className="text-xs text-warm-400">{new Date(entry.createdAt).toLocaleString()}</span>
+                </div>
+                {entry.note && <p className="text-sm text-warm-700">{entry.note}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlanItemCard({
+  item,
+  onStatusChange,
+  onActionUpdate,
+  sessionId,
+  onEvidenceAdded,
+}: {
+  item: IndependencePlanItem;
+  onStatusChange: (id: string, status: RecommendationActionStatus) => void;
+  onActionUpdate: (id: string, updates: Partial<Pick<IndependencePlanItem, "owner" | "priority" | "dueDate" | "skippedReason">>) => void;
+  sessionId?: string;
+  onEvidenceAdded: (id: string) => void;
+}) {
+  return (
+    <div className="p-4 bg-warm-50 border border-warm-200 rounded-xl">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-2">
+        <div>
+          <p className="text-sm font-semibold text-warm-900">{item.title}</p>
+          <p className="text-xs text-warm-400 mt-0.5">{item.section} · {item.owner.replace(/_/g, " ")}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <select
+            value={item.status}
+            onChange={(e) => onStatusChange(item.id, e.target.value as RecommendationActionStatus)}
+            className="text-xs border border-warm-200 rounded-lg bg-warm-50 px-2 py-1.5 text-warm-700"
+          >
+            <option value="pending">Pending</option>
+            <option value="in_progress">In progress</option>
+            <option value="completed">Completed</option>
+            <option value="skipped">Skipped</option>
+          </select>
+          <span className={`text-xs px-2 py-1.5 rounded-lg border ${impactClass(item.estimatedPreventionImpact)}`}>
+            Estimated prevention impact: {item.estimatedPreventionImpact ?? "low"}
+          </span>
+        </div>
+      </div>
+      <p className="text-sm text-warm-600 leading-relaxed">{item.recommendedAction}</p>
+      <p className="text-xs text-warm-400 mt-2">{item.whyItMatters}</p>
+      <div className="grid sm:grid-cols-3 gap-2 mt-3">
+        <select
+          value={item.owner}
+          onChange={(e) => onActionUpdate(item.id, { owner: e.target.value as IndependencePlanOwner })}
+          className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+        >
+          <option value="family">Family</option>
+          <option value="caregiver">Caregiver</option>
+          <option value="contractor">Contractor</option>
+          <option value="clinician">Clinician</option>
+          <option value="insurer_or_care_coordinator">Care coordinator</option>
+        </select>
+        <select
+          value={item.priority}
+          onChange={(e) => onActionUpdate(item.id, { priority: e.target.value as IndependencePlanPriority })}
+          className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+        >
+          <option value="immediate">Immediate</option>
+          <option value="this_week">This week</option>
+          <option value="this_month">This month</option>
+          <option value="monitor">Monitor</option>
+        </select>
+        <input
+          type="date"
+          value={item.dueDate ? item.dueDate.slice(0, 10) : ""}
+          onChange={(e) => onActionUpdate(item.id, { dueDate: e.target.value || undefined })}
+          className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+        />
+      </div>
+      {item.status === "completed" && (
+        <p className={`text-xs mt-3 ${item.evidenceCount ? "text-green-700" : "text-amber-700"}`}>
+          {item.evidenceCount ? `${item.evidenceCount} evidence update${item.evidenceCount !== 1 ? "s" : ""} attached` : "Completion evidence missing"}
+        </p>
+      )}
+      <EvidencePanel sessionId={sessionId} item={item} onEvidenceAdded={onEvidenceAdded} />
+    </div>
+  );
+}
+
+function FamilyDashboardTab({
+  report,
+  onStatusChange,
+  onActionUpdate,
+  onEvidenceAdded,
+}: {
+  report: AssessmentReport;
+  onStatusChange: (id: string, status: RecommendationActionStatus) => void;
+  onActionUpdate: (id: string, updates: Partial<Pick<IndependencePlanItem, "owner" | "priority" | "dueDate" | "skippedReason">>) => void;
+  onEvidenceAdded: (id: string) => void;
+}) {
+  const dashboard = report.familyDashboard;
+  const risk = report.independenceRiskScore;
+  const completedActions = (report.independencePlan ?? []).filter((item) => item.status === "completed" || item.status === "skipped").length;
+  const openImmediate = (report.independencePlan ?? []).filter((item) => item.priority === "immediate" && item.status !== "completed" && item.status !== "skipped");
+  if (!dashboard || !risk) {
+    return (
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <p className="text-sm text-warm-500">Parent safety dashboard will appear on new reports.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <FamilyFollowUpPanel sessionId={report.sessionId} report={report} />
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-warm-900">Parent Safety Dashboard</h3>
+            <p className="text-sm text-warm-500 mt-1">{dashboard.dignityFocusedCopy}</p>
+          </div>
+          <span className={`px-3 py-1.5 rounded-full border text-sm font-semibold ${riskClass(dashboard.overallIndependenceRisk)}`}>
+            {riskLabel[dashboard.overallIndependenceRisk]} independence risk
+          </span>
+        </div>
+        <div className="grid sm:grid-cols-4 gap-3">
+          {[
+            ["Fall risk", risk.fallRisk],
+            ["Daily living", risk.dailyLivingRisk],
+            ["Caregiver load", risk.caregiverBurdenRisk],
+            ["Memory support", risk.cognitiveSupportRisk],
+          ].map(([label, value]) => (
+            <div key={label} className={`p-3 rounded-xl border ${riskClass(value)}`}>
+              <p className="text-xs opacity-75">{label}</p>
+              <p className="font-bold mt-1">{riskLabel[value]}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+          <h3 className="font-semibold text-warm-900 mb-3">Top Actions</h3>
+          <div className="space-y-3">
+            {dashboard.topUrgentActions.map((item) => (
+              <PlanItemCard
+                key={item.id}
+                item={item}
+                sessionId={report.sessionId}
+                onStatusChange={onStatusChange}
+                onActionUpdate={onActionUpdate}
+                onEvidenceAdded={onEvidenceAdded}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+            <h3 className="font-semibold text-warm-900 mb-3">Progress</h3>
+            <div className="flex items-center gap-3">
+              <div className="flex-1 h-2 bg-warm-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-green-500"
+                  style={{ width: `${Math.round((dashboard.completedActionCount / Math.max(dashboard.completedActionCount + dashboard.pendingActionCount, 1)) * 100)}%` }}
+                />
+              </div>
+              <span className="text-sm font-semibold text-warm-700">
+                {dashboard.completedActionCount}/{dashboard.completedActionCount + dashboard.pendingActionCount}
+              </span>
+            </div>
+            <p className="text-xs text-warm-400 mt-2">Completed or intentionally skipped actions.</p>
+            <p className="text-sm text-warm-700 mt-3">
+              Your family has completed {completedActions} of {(report.independencePlan ?? []).length} recommended actions.
+              {openImmediate[0] ? ` The highest remaining priority is ${openImmediate[0].title}.` : " Keep monitoring and updating the plan as needs change."}
+            </p>
+          </div>
+          <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+            <h3 className="font-semibold text-warm-900 mb-3">Family Check-in</h3>
+            <p className="text-sm text-warm-700">{dashboard.nextRecommendedFamilyCheckIn}</p>
+            <p className="text-xs text-warm-400 mt-2">{dashboard.emergencyPlanSummary}</p>
+          </div>
+        </div>
+      </div>
+
+      {dashboard.roomRiskOverview.length > 0 && (
+        <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+          <h3 className="font-semibold text-warm-900 mb-3">Room-by-Room Risk Overview</h3>
+          <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+            {dashboard.roomRiskOverview.map((room) => (
+              <div key={room.roomType} className={`p-3 rounded-xl border ${riskClass(room.risk)}`}>
+                <p className="text-sm font-semibold">{ROOM_NAMES[room.roomType]}</p>
+                <p className="text-xs mt-1">{room.openIssueCount} open item{room.openIssueCount !== 1 ? "s" : ""}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FamilyFollowUpPanel({ sessionId, report }: { sessionId?: string; report: AssessmentReport }) {
+  const [followUps, setFollowUps] = useState<FollowUpCheckIn[]>([]);
+  const [draft, setDraft] = useState({
+    anyNewFalls: false,
+    anyNearFalls: false,
+    anyHospitalVisit: false,
+    majorHomeFixCompleted: false,
+    caregiverSupportAdded: false,
+    medicationRoutineImproved: false,
+    parentFeelsSafer: "unsure" as "yes" | "somewhat" | "no" | "unsure",
+    familyFeelsMorePrepared: "unsure" as "yes" | "somewhat" | "no" | "unsure",
+    notes: "",
+    currentBiggestConcern: "",
+    requestCareCoordinatorFollowup: false,
+  });
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void listFamilyFollowUps(sessionId).then((response) => setFollowUps(response.followUps)).catch(() => undefined);
+  }, [sessionId]);
+
+  const pending = followUps.find((item) => item.status === "scheduled");
+  const completed = followUps.filter((item) => item.status === "completed");
+  const latest = completed[0] ?? followUps[0];
+  const completedActions = (report.independencePlan ?? []).filter((item) => item.status === "completed" || item.status === "skipped").length;
+  const openImmediate = (report.independencePlan ?? []).filter((item) => item.priority === "immediate" && item.status !== "completed" && item.status !== "skipped").length;
+
+  const submit = async () => {
+    if (!sessionId || !pending) return;
+    const response = await submitFamilyFollowUp(sessionId, pending.id, draft);
+    setFollowUps((current) => current.map((item) => item.id === pending.id ? response.followUp : item));
+  };
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-4">
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <h3 className="font-bold text-warm-900 mb-1">Family Follow-Up</h3>
+        <p className="text-sm text-warm-500 mb-4">Help us understand how your parent is doing since the safety plan was created. This is self-reported information and not medical advice.</p>
+        {pending ? (
+          <div className="space-y-3">
+            <p className="text-xs text-warm-500">Scheduled for {new Date(pending.scheduledFor).toLocaleDateString()}</p>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {[
+                ["anyNewFalls", "Any new falls?"],
+                ["anyNearFalls", "Any near-falls?"],
+                ["anyHospitalVisit", "Any hospital visit?"],
+                ["majorHomeFixCompleted", "Major home fix completed?"],
+                ["caregiverSupportAdded", "Caregiver support added?"],
+                ["medicationRoutineImproved", "Medication routine improved?"],
+                ["requestCareCoordinatorFollowup", "Request care coordinator follow-up?"],
+              ].map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm text-warm-700 bg-warm-50 border border-warm-200 rounded-lg px-3 py-2">
+                  <input type="checkbox" checked={Boolean(draft[key as keyof typeof draft])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.checked }))} className="w-4 h-4 accent-brand-600" />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2">
+              <select value={draft.parentFeelsSafer} onChange={(e) => setDraft((d) => ({ ...d, parentFeelsSafer: e.target.value as typeof draft.parentFeelsSafer }))} className="text-sm border border-warm-200 rounded-lg bg-white px-3 py-2">
+                <option value="yes">Parent feels safer</option>
+                <option value="somewhat">Parent feels somewhat safer</option>
+                <option value="no">Parent does not feel safer</option>
+                <option value="unsure">Unsure if parent feels safer</option>
+              </select>
+              <select value={draft.familyFeelsMorePrepared} onChange={(e) => setDraft((d) => ({ ...d, familyFeelsMorePrepared: e.target.value as typeof draft.familyFeelsMorePrepared }))} className="text-sm border border-warm-200 rounded-lg bg-white px-3 py-2">
+                <option value="yes">Family feels more prepared</option>
+                <option value="somewhat">Family feels somewhat prepared</option>
+                <option value="no">Family does not feel more prepared</option>
+                <option value="unsure">Unsure</option>
+              </select>
+            </div>
+            <input value={draft.currentBiggestConcern} onChange={(e) => setDraft((d) => ({ ...d, currentBiggestConcern: e.target.value }))} placeholder="Current biggest concern" className="w-full text-sm border border-warm-200 rounded-lg bg-white px-3 py-2" />
+            <textarea value={draft.notes} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} placeholder="Notes" className="w-full text-sm border border-warm-200 rounded-lg bg-white px-3 py-2 min-h-20" />
+            <p className="text-xs text-amber-700">If this is an emergency or immediate safety concern, contact local emergency or medical services.</p>
+            <button type="button" onClick={() => void submit()} className="btn-primary py-2 px-3 text-sm">Submit follow-up</button>
+          </div>
+        ) : (
+          <p className="text-sm text-warm-500">No scheduled family follow-up is open right now. A care coordinator can schedule 30/60/90-day check-ins from the admin dashboard for pilot tracking.</p>
+        )}
+      </div>
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <h3 className="font-bold text-warm-900 mb-1">Progress Since Assessment</h3>
+        <p className="text-sm text-warm-700">{completedActions} completed actions · {openImmediate} open immediate actions · {completed.length} follow-up check-in{completed.length !== 1 ? "s" : ""} submitted.</p>
+        {latest?.currentBiggestConcern && <p className="text-sm text-warm-700 mt-2">Current biggest concern: {latest.currentBiggestConcern}</p>}
+        <p className="text-sm text-warm-500 mt-3">
+          {openImmediate > 0 ? "Suggested next step: finish or assign the remaining immediate action before moving to lower-priority tasks." : "Suggested next step: keep monitoring, add care notes when things change, and continue aging-at-home progress check-ins."}
+        </p>
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-semibold text-warm-500 uppercase tracking-wide">Timeline</p>
+          <p className="text-xs text-warm-600">Initial assessment: {new Date(report.generatedAt).toLocaleDateString()}</p>
+          <p className="text-xs text-warm-600">Risk score: {report.independenceRiskScore?.overallIndependenceRisk ?? "not available"}</p>
+          {latest && <p className="text-xs text-warm-600">Latest self-reported update: {latest.completedAt ? new Date(latest.completedAt).toLocaleDateString() : latest.status}</p>}
+          {latest?.newFallsReported && <p className="text-xs text-amber-700">New concern reported: fall</p>}
+          {latest?.newHospitalVisitReported && <p className="text-xs text-amber-700">New concern reported: hospital visit</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CareNotesPanel({ sessionId }: { sessionId?: string }) {
+  const [notes, setNotes] = useState<CareNote[]>([]);
+  const [summary, setSummary] = useState<CareNoteSummary | null>(null);
+  const [draft, setDraft] = useState<{
+    noteType: CareNoteType;
+    authorName: string;
+    authorRole: CareNoteAuthorRole;
+    body: string;
+    observedChanges: string;
+    concerns: string;
+    followUpNeeded: boolean;
+  }>({
+    noteType: "family_check_in",
+    authorName: "",
+    authorRole: "family",
+    body: "",
+    observedChanges: "",
+    concerns: "",
+    followUpNeeded: false,
+  });
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void listCareNotes(sessionId).then((response) => setNotes(response.notes)).catch(() => undefined);
+  }, [sessionId]);
+
+  const submit = async () => {
+    if (!sessionId || !draft.body.trim()) return;
+    const response = await addCareNote(sessionId, {
+      ...draft,
+      authorName: draft.authorName || undefined,
+      observedChanges: draft.observedChanges || undefined,
+      concerns: draft.concerns || undefined,
+    });
+    setNotes((current) => [response.note, ...current]);
+    setDraft((current) => ({ ...current, body: "", observedChanges: "", concerns: "", followUpNeeded: false }));
+  };
+
+  const summarize = async () => {
+    if (!sessionId) return;
+    const response = await getCareNoteSummary(sessionId);
+    setSummary(response.summary);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <h3 className="font-bold text-warm-900 mb-1">Care Notes</h3>
+        <p className="text-sm text-warm-500 mb-4">Track family check-ins, caregiver visits, contractor updates, and clinician notes.</p>
+        <div className="grid sm:grid-cols-3 gap-3 mb-3">
+          <select
+            value={draft.noteType}
+            onChange={(e) => setDraft((d) => ({ ...d, noteType: e.target.value as typeof draft.noteType }))}
+            className="border border-warm-200 rounded-xl px-3 py-2 text-sm"
+          >
+            <option value="family_check_in">Family check-in</option>
+            <option value="caregiver_visit">Caregiver visit</option>
+            <option value="contractor_update">Contractor update</option>
+            <option value="clinician_note">Clinician note</option>
+            <option value="other">Other</option>
+          </select>
+          <input
+            value={draft.authorName}
+            onChange={(e) => setDraft((d) => ({ ...d, authorName: e.target.value }))}
+            placeholder="Author name"
+            className="border border-warm-200 rounded-xl px-3 py-2 text-sm"
+          />
+          <select
+            value={draft.authorRole}
+            onChange={(e) => setDraft((d) => ({ ...d, authorRole: e.target.value as typeof draft.authorRole }))}
+            className="border border-warm-200 rounded-xl px-3 py-2 text-sm"
+          >
+            <option value="family">Family</option>
+            <option value="caregiver">Caregiver</option>
+            <option value="contractor">Contractor</option>
+            <option value="clinician">Clinician</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <textarea
+          value={draft.body}
+          onChange={(e) => setDraft((d) => ({ ...d, body: e.target.value }))}
+          placeholder="What happened during this check-in or visit?"
+          className="w-full border border-warm-200 rounded-xl px-3 py-2 text-sm min-h-24 mb-3"
+        />
+        <div className="grid sm:grid-cols-2 gap-3 mb-3">
+          <input
+            value={draft.observedChanges}
+            onChange={(e) => setDraft((d) => ({ ...d, observedChanges: e.target.value }))}
+            placeholder="Observed changes"
+            className="border border-warm-200 rounded-xl px-3 py-2 text-sm"
+          />
+          <input
+            value={draft.concerns}
+            onChange={(e) => setDraft((d) => ({ ...d, concerns: e.target.value }))}
+            placeholder="Concerns"
+            className="border border-warm-200 rounded-xl px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-2 text-sm text-warm-600">
+            <input
+              type="checkbox"
+              checked={draft.followUpNeeded}
+              onChange={(e) => setDraft((d) => ({ ...d, followUpNeeded: e.target.checked }))}
+              className="accent-brand-600"
+            />
+            Follow-up needed
+          </label>
+          <div className="flex gap-2">
+            <button type="button" onClick={summarize} className="btn-secondary py-2 px-3 text-sm">Generate family summary</button>
+            <button type="button" onClick={submit} className="btn-primary py-2 px-3 text-sm">Add note</button>
+          </div>
+        </div>
+      </div>
+
+      {summary && (
+        <div className="bg-brand-50 border border-brand-200 rounded-2xl p-6 shadow-sm">
+          <h3 className="font-semibold text-warm-900 mb-3">Family Summary</h3>
+          <p className="text-sm text-warm-700"><strong>Changed:</strong> {summary.whatChanged.join(" ")}</p>
+          <p className="text-sm text-warm-700 mt-2"><strong>Needs attention:</strong> {summary.whatNeedsAttention.join(" ")}</p>
+          <p className="text-sm text-warm-700 mt-2"><strong>Next:</strong> {summary.nextRecommendedAction}</p>
+          <p className="text-xs text-warm-500 mt-3">{summary.disclaimer}</p>
+        </div>
+      )}
+
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <h3 className="font-semibold text-warm-900 mb-3">Recent Notes</h3>
+        {notes.length === 0 ? (
+          <p className="text-sm text-warm-400">No care notes yet. Add a family check-in, caregiver visit, contractor update, or other note when something changes.</p>
+        ) : (
+          <div className="space-y-3">
+            {notes.map((note) => (
+              <div key={note.id} className="p-3 bg-warm-50 border border-warm-200 rounded-xl">
+                <div className="flex items-center justify-between gap-3 mb-1">
+                  <p className="text-sm font-semibold text-warm-900">{note.noteType.replace(/_/g, " ")}</p>
+                  <span className="text-xs text-warm-400">{new Date(note.createdAt).toLocaleString()}</span>
+                </div>
+                <p className="text-sm text-warm-700">{note.body}</p>
+                {(note.concerns || note.followUpNeeded) && <p className="text-xs text-amber-700 mt-2">Follow-up: {note.concerns || "Requested"}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ServiceRequestsPanel({
+  sessionId,
+  onScrollToContractor,
+}: {
+  sessionId?: string;
+  onScrollToContractor: () => void;
+}) {
+  const [requests, setRequests] = useState<ServiceRequest[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestedServiceRequest[]>([]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void listServiceRequests(sessionId)
+      .then((response) => setRequests(response.serviceRequests))
+      .catch(() => undefined);
+  }, [sessionId]);
+
+  const generate = async () => {
+    if (!sessionId) return;
+    const response = await generateServiceRequestSuggestions(sessionId);
+    setSuggestions(response.suggestions);
+    setRequests(response.existingRequests);
+  };
+
+  const createFromSuggestion = async (suggestion: SuggestedServiceRequest) => {
+    if (!sessionId) return;
+    const response = await createServiceRequest(sessionId, {
+      ...suggestion,
+      requestedByRole: "family",
+      status: "requested",
+    });
+    setRequests((current) => [response.serviceRequest, ...current]);
+    setSuggestions((current) => current.filter((item) => item !== suggestion));
+  };
+
+  const patchRequest = async (requestId: string, updates: Parameters<typeof updateServiceRequest>[1]) => {
+    const response = await updateServiceRequest(requestId, updates);
+    setRequests((current) => current.map((item) => item.id === requestId ? response.serviceRequest : item));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="font-bold text-warm-900">Care Network</h3>
+            <p className="text-sm text-warm-500">Recommended service support for aging-at-home assistance and care coordination.</p>
+          </div>
+          <button type="button" onClick={generate} className="btn-primary py-2 px-3 text-sm">Generate suggestions</button>
+        </div>
+        {suggestions.length === 0 ? (
+          <p className="text-sm text-warm-400">Generate suggestions from the current prevention plan.</p>
+        ) : (
+          <div className="grid lg:grid-cols-2 gap-3">
+            {suggestions.map((suggestion) => (
+              <div key={`${suggestion.serviceType}:${suggestion.title}`} className="p-4 rounded-xl border border-brand-200 bg-brand-50">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-warm-900">{suggestion.title}</p>
+                    <p className="text-xs text-brand-700 mt-0.5">{suggestion.serviceType.replace(/_/g, " ")} · {suggestion.priority.replace("_", " ")}</p>
+                  </div>
+                  <button type="button" onClick={() => void createFromSuggestion(suggestion)} className="btn-secondary py-1.5 px-2 text-xs">Create request</button>
+                </div>
+                <p className="text-sm text-warm-700 mt-2">{suggestion.description}</p>
+                <p className="text-xs text-warm-500 mt-2">{suggestion.whyThisHelps}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+        <h3 className="font-semibold text-warm-900 mb-3">Existing Service Requests</h3>
+        {requests.length === 0 ? (
+          <p className="text-sm text-warm-400">No care coordination requests yet. Generate suggested service support above or create a request from a recommendation when the family is ready to coordinate help.</p>
+        ) : (
+          <div className="space-y-3">
+            {requests.map((request) => (
+              <div key={request.id} className="p-4 rounded-xl border border-warm-200 bg-warm-50">
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-sm font-semibold text-warm-900">{request.title}</p>
+                    <p className="text-xs text-warm-500 mt-0.5">
+                      {request.serviceType.replace(/_/g, " ")} · {request.priority.replace("_", " ")}
+                      {request.recommendationActionId ? " · linked recommendation" : ""}
+                    </p>
+                  </div>
+                  <select
+                    value={request.status}
+                    onChange={(e) => void patchRequest(request.id, { status: e.target.value as ServiceRequestStatus })}
+                    className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-1.5"
+                  >
+                    <option value="draft">Draft</option>
+                    <option value="requested">Requested</option>
+                    <option value="matched">Matched</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+                <p className="text-sm text-warm-700 mb-3">{request.description}</p>
+                <div className="grid sm:grid-cols-3 gap-2 mb-3">
+                  <input
+                    type="datetime-local"
+                    value={request.scheduledAt ? request.scheduledAt.slice(0, 16) : ""}
+                    onChange={(e) => void patchRequest(request.id, { scheduledAt: e.target.value || null, status: e.target.value ? "scheduled" : request.status })}
+                    className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+                  />
+                  <input
+                    value={request.providerName ?? ""}
+                    onChange={(e) => void patchRequest(request.id, { providerName: e.target.value || null })}
+                    placeholder="Provider name"
+                    className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+                  />
+                  <input
+                    value={request.providerContact ?? ""}
+                    onChange={(e) => void patchRequest(request.id, { providerContact: e.target.value || null })}
+                    placeholder="Provider contact"
+                    className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+                  />
+                </div>
+                <textarea
+                  value={request.notes ?? ""}
+                  onChange={(e) => void patchRequest(request.id, { notes: e.target.value || null })}
+                  placeholder="Provider notes or care coordination details"
+                  className="w-full text-xs border border-warm-200 rounded-lg bg-white px-2 py-2 min-h-16"
+                />
+                {request.status === "completed" && (
+                  <div className="mt-3 grid sm:grid-cols-3 gap-2">
+                    <label className="flex items-center gap-2 text-xs text-warm-700 bg-white border border-warm-200 rounded-lg px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={request.completionVerified}
+                        onChange={(e) => void patchRequest(request.id, {
+                          completionVerified: e.target.checked,
+                          completionVerifiedAt: e.target.checked ? new Date().toISOString() : null,
+                          completionVerifiedBy: e.target.checked ? "family" : null,
+                        })}
+                        className="w-4 h-4 accent-brand-600"
+                      />
+                      Completion verified
+                    </label>
+                    <select
+                      value={request.serviceQualityRating ?? ""}
+                      onChange={(e) => void patchRequest(request.id, { serviceQualityRating: e.target.value ? Number(e.target.value) : null })}
+                      className="text-xs border border-warm-200 rounded-lg bg-white px-2 py-2"
+                    >
+                      <option value="">Rating</option>
+                      <option value="5">5 - Excellent</option>
+                      <option value="4">4 - Good</option>
+                      <option value="3">3 - Okay</option>
+                      <option value="2">2 - Needs work</option>
+                      <option value="1">1 - Poor</option>
+                    </select>
+                    <label className="flex items-center gap-2 text-xs text-warm-700 bg-white border border-warm-200 rounded-lg px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={request.providerFollowupNeeded}
+                        onChange={(e) => void patchRequest(request.id, { providerFollowupNeeded: e.target.checked })}
+                        className="w-4 h-4 accent-brand-600"
+                      />
+                      Follow-up needed
+                    </label>
+                    <textarea
+                      value={request.familyFeedback ?? ""}
+                      onChange={(e) => void patchRequest(request.id, { familyFeedback: e.target.value || null })}
+                      placeholder="Family feedback on the completed service"
+                      className="sm:col-span-3 w-full text-xs border border-warm-200 rounded-lg bg-white px-2 py-2 min-h-14"
+                    />
+                  </div>
+                )}
+                {(request.completionVerified || request.serviceQualityRating || request.familyFeedback) && (
+                  <p className="text-xs text-warm-500 mt-2">
+                    Quality: {request.completionVerified ? "completion verified" : "completion not verified"}
+                    {request.serviceQualityRating ? ` · rating ${request.serviceQualityRating}/5` : ""}
+                    {request.familyFeedback ? ` · ${request.familyFeedback}` : ""}
+                  </p>
+                )}
+                {request.serviceType === "home_modification" && (
+                  <button type="button" onClick={onScrollToContractor} className="mt-3 text-xs font-semibold text-brand-700 hover:text-brand-800">
+                    Use existing Contractor Scope / Lead flow
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function ReportPage() {
   const navigate = useNavigate();
+  const { sessionId: sessionIdParam } = useParams<{ sessionId?: string }>();
   const printRef = useRef<HTMLDivElement>(null);
   const [report, setReport] = useState<AssessmentReport | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get("sessionId");
+    const sessionId = sessionIdParam;
     const profile = loadProfile();
     if (sessionId && profile) {
       fetchReport(sessionId)
         .then((response) => {
           setReport(toAssessmentReport(response.report as Parameters<typeof toAssessmentReport>[0], profile));
+          setLoadError(null);
         })
         .catch(() => {
-          // fallback to local session report below
-        });
+          setLoadError("We couldn't load the latest report from the server. Showing your saved local copy if available.");
+        })
+        .finally(() => setIsLoading(false));
+      return;
     }
 
     // Check for shared report in URL hash
@@ -250,21 +1013,40 @@ export default function ReportPage() {
       const decoded = decodeReportFromHash(hash.slice(7));
       if (decoded) {
         setReport(decoded);
+        setIsLoading(false);
         return;
       }
     }
     const stored = loadReport();
     if (stored) setReport(stored);
+    setIsLoading(false);
   }, []);
+
+  useEffect(() => {
+    if (!report) return;
+    void trackAnalyticsEvent({
+      eventName: "report_viewed",
+      sessionId: report.sessionId,
+      reportId: report.sessionId,
+      metadata: {
+        observationCount: report.observations.length,
+      },
+    }).catch(() => undefined);
+  }, [report]);
 
   const handleShare = () => {
     if (!report) return;
     const url = getShareableUrl(report);
     setShareUrl(url);
-    navigator.clipboard.writeText(url).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 3000);
-    });
+    // Guard against clipboard API being unavailable (non-HTTPS, denied permission).
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 3000);
+      }).catch(() => {
+        // Clipboard write failed — shareUrl is still displayed so the user can copy manually.
+      });
+    }
   };
 
   const handlePrint = () => window.print();
@@ -273,7 +1055,7 @@ export default function ReportPage() {
     if (!report) return;
     const obs = report.observations;
     const lines = [
-      "HOME FALL & SAFETY EVALUATOR — ASSESSMENT REPORT",
+      "HFE — PARENT SAFETY & INDEPENDENCE REPORT",
       "=".repeat(52),
       `Generated: ${new Date(report.generatedAt).toLocaleString()}`,
       `Resident: ${report.profile.assessmentFor === "family" ? report.profile.subjectName ?? "Family member" : "Self"}, Age ${report.profile.age}`,
@@ -302,13 +1084,136 @@ export default function ReportPage() {
     URL.revokeObjectURL(a.href);
   };
 
+  const handlePlanStatusChange = (itemId: string, actionStatus: RecommendationActionStatus) => {
+    if (!report) return;
+    const nextPlan = (report.independencePlan ?? []).map((item) =>
+      item.id === itemId ? { ...item, status: actionStatus, completedAt: actionStatus === "completed" ? new Date().toISOString() : item.completedAt } : item
+    );
+    const completed = nextPlan.filter((item) => item.status === "completed" || item.status === "skipped").length;
+    setReport({
+      ...report,
+      independencePlan: nextPlan,
+      familyDashboard: report.familyDashboard
+        ? {
+            ...report.familyDashboard,
+            topUrgentActions: report.familyDashboard.topUrgentActions.map((item) =>
+              item.id === itemId ? { ...item, status: actionStatus } : item
+            ),
+            completedActionCount: completed,
+            pendingActionCount: nextPlan.length - completed,
+          }
+        : report.familyDashboard,
+    });
+    if (report.sessionId) {
+      void updateRecommendationStatus(report.sessionId, itemId, actionStatus).catch(() => undefined);
+    }
+  };
+
+  const handlePlanActionUpdate = (
+    itemId: string,
+    updates: Partial<Pick<IndependencePlanItem, "owner" | "priority" | "dueDate" | "skippedReason">>
+  ) => {
+    if (!report) return;
+    const nextPlan = (report.independencePlan ?? []).map((item) =>
+      item.id === itemId ? { ...item, ...updates } : item
+    );
+    setReport({
+      ...report,
+      independencePlan: nextPlan,
+      familyDashboard: report.familyDashboard
+        ? {
+            ...report.familyDashboard,
+            topUrgentActions: report.familyDashboard.topUrgentActions.map((item) =>
+              item.id === itemId ? { ...item, ...updates } : item
+            ),
+          }
+        : report.familyDashboard,
+    });
+    if (report.sessionId) {
+      void updateRecommendationStatus(report.sessionId, itemId, {
+        actionOwner: updates.owner,
+        actionPriority: updates.priority,
+        dueDate: updates.dueDate ?? undefined,
+        skippedReason: updates.skippedReason,
+      }).catch(() => undefined);
+    }
+  };
+
+  const handleEvidenceAdded = (itemId: string) => {
+    if (!report) return;
+    const bump = (item: IndependencePlanItem) =>
+      item.id === itemId ? { ...item, evidenceCount: (item.evidenceCount ?? 0) + 1 } : item;
+    setReport({
+      ...report,
+      independencePlan: (report.independencePlan ?? []).map(bump),
+      familyDashboard: report.familyDashboard
+        ? {
+            ...report.familyDashboard,
+            topUrgentActions: report.familyDashboard.topUrgentActions.map(bump),
+          }
+        : report.familyDashboard,
+    });
+  };
+
+  const handleOpenPreventionExport = () => {
+    if (!report?.sessionId) return;
+    window.open(`/api/sessions/${encodeURIComponent(report.sessionId)}/prevention-summary.html`, "_blank", "noopener,noreferrer");
+    void getPreventionSummary(report.sessionId).catch(() => undefined);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-warm-50 px-4 sm:px-6 lg:px-8 py-8">
+        <div className="max-w-5xl mx-auto space-y-6">
+          {/* Header skeleton */}
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
+            <div className="space-y-2">
+              <div className="h-8 w-80 bg-gray-200 animate-pulse rounded-lg" />
+              <div className="h-4 w-56 bg-gray-200 animate-pulse rounded" />
+            </div>
+            <div className="flex gap-2">
+              <div className="h-9 w-28 bg-gray-200 animate-pulse rounded-xl" />
+              <div className="h-9 w-24 bg-gray-200 animate-pulse rounded-xl" />
+            </div>
+          </div>
+
+          {/* Score ring + stats card skeleton */}
+          <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+            <div className="flex flex-wrap items-center gap-8">
+              <div className="w-32 h-32 rounded-full bg-gray-200 animate-pulse" />
+              <div className="flex-1 grid grid-cols-2 sm:grid-cols-3 gap-4">
+                {[...Array(3)].map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <div className="h-3 w-20 bg-gray-200 animate-pulse rounded" />
+                    <div className="h-6 w-16 bg-gray-200 animate-pulse rounded" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Card outlines skeleton */}
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm space-y-3">
+              <div className="h-5 w-40 bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-full bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-5/6 bg-gray-200 animate-pulse rounded" />
+              <div className="h-4 w-3/4 bg-gray-200 animate-pulse rounded" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (!report) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-6 text-center px-4">
         <ShieldCheck className="w-20 h-20 text-warm-300" />
         <div>
           <h1 className="text-2xl font-bold text-warm-900 mb-2 font-display">No Report Found</h1>
-          <p className="text-warm-500 mb-6">Complete a home assessment to generate your personalized report.</p>
+          <p className="text-warm-500 mb-2">Complete a home assessment to generate your personalized report.</p>
+          {loadError && <p className="text-sm text-amber-700 mb-4">{loadError}</p>}
         </div>
         <Link to="/onboarding" className="btn-primary">
           Start Assessment <ArrowRight className="w-4 h-4" />
@@ -324,7 +1229,7 @@ export default function ReportPage() {
   const medObs = obs.filter((o) => o.priority === "medium");
   const lowObs = obs.filter((o) => o.priority === "low");
   const scoreLabel =
-    score >= 80 ? "Good" : score >= 60 ? "Needs Improvement" : "Unsafe — Act Now";
+    score >= 80 ? "Good" : score >= 60 ? "Needs Improvement" : "Action Needed — Let's Fix This";
   const scoreColor =
     score >= 80 ? "text-green-600" : score >= 60 ? "text-amber-600" : "text-red-600";
 
@@ -333,74 +1238,40 @@ export default function ReportPage() {
       ? report.profile.subjectName
       : "the resident";
 
-  const totalCostMin = obs.reduce((s, o) => s + o.costMin, 0);
-  const totalCostMax = obs.reduce((s, o) => s + o.costMax, 0);
+  const totalCostMin = obs.reduce((s, o) => s + (o.costMin ?? 0), 0);
+  const totalCostMax = obs.reduce((s, o) => s + (o.costMax ?? 0), 0);
   const avgRiskReduction =
     obs.length > 0
-      ? Math.round(obs.reduce((s, o) => s + o.riskReductionPercent, 0) / obs.length)
+      ? Math.round(obs.reduce((s, o) => s + (o.riskReductionPercent ?? 0), 0) / obs.length)
       : 0;
 
   const TABS: { id: TabId; label: string }[] = [
     { id: "overview", label: "Overview" },
+    { id: "dashboard", label: "Family Dashboard" },
     { id: "rooms", label: "Room Findings" },
     { id: "shopping", label: "Shopping List" },
     { id: "contractor", label: "Contractor Scope" },
     { id: "action", label: "Action Plan" },
+    { id: "services", label: "Care Network" },
+    { id: "care", label: "Care Notes" },
+    { id: "prevention", label: "Prevention Summary" },
     { id: "premium", label: "Premium Services" },
   ];
-
-  const btnLight = "inline-flex items-center gap-1.5 py-2 px-3 text-sm bg-white border border-warm-200 text-warm-700 hover:bg-warm-50 rounded-xl font-medium transition-colors";
 
   return (
     <div className="min-h-screen bg-warm-50 px-4 sm:px-6 lg:px-8 py-8" ref={printRef}>
       <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex flex-wrap items-start justify-between gap-4 mb-8 no-print">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <ShieldCheck className="w-5 h-5 text-brand-600" />
-              <h1 className="text-2xl font-bold text-warm-900 font-display">Safety Assessment Report</h1>
-            </div>
-            <div className="flex items-center gap-3 text-warm-400 text-sm">
-              <span className="flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5" />
-                {new Date(report.generatedAt).toLocaleString()}
-              </span>
-              <span className="flex items-center gap-1">
-                <User className="w-3.5 h-3.5" />
-                {subjectName}, age {report.profile.age}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button onClick={handleShare} className={btnLight}>
-              {copied ? <Check className="w-4 h-4 text-green-600" /> : <Share2 className="w-4 h-4" />}
-              {copied ? "Link Copied!" : "Share Report"}
-            </button>
-            <button onClick={handlePrint} className={btnLight}>
-              <Printer className="w-4 h-4" />
-              Print / PDF
-            </button>
-            <button onClick={handleDownload} className={btnLight}>
-              <Download className="w-4 h-4" />
-              Download
-            </button>
-            <button onClick={() => navigate("/onboarding")} className="btn-primary py-2 px-3 text-sm gap-1.5">
-              <RotateCcw className="w-4 h-4" />
-              New Assessment
-            </button>
-          </div>
-        </div>
-
-        {/* Share URL */}
-        {shareUrl && (
-          <div className="flex items-center gap-3 p-3.5 bg-brand-50 border border-brand-200 rounded-xl mb-5 animate-fade-in no-print">
-            <Copy className="w-4 h-4 text-brand-600 shrink-0" />
-            <p className="text-xs text-warm-700 truncate flex-1 font-mono">{shareUrl}</p>
-            <span className="text-xs text-green-600 shrink-0">Copied to clipboard</span>
-          </div>
-        )}
+        <ReportHeader
+          report={report}
+          subjectName={subjectName}
+          shareUrl={shareUrl}
+          copied={copied}
+          loadError={loadError}
+          onShare={handleShare}
+          onPrint={handlePrint}
+          onDownload={handleDownload}
+          onOpenPreventionExport={handleOpenPreventionExport}
+        />
 
         {/* Summary row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -456,25 +1327,49 @@ export default function ReportPage() {
           </div>
         </div>
 
+        {report.independenceRiskScore && (
+          <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm mb-6">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div>
+                <h2 className="text-lg font-bold text-warm-900">Independence Risk Score</h2>
+                <p className="text-sm text-warm-500">Practical risk support for aging at home and family peace of mind.</p>
+              </div>
+              <span className={`px-3 py-1.5 rounded-full border text-sm font-semibold ${riskClass(report.independenceRiskScore.overallIndependenceRisk)}`}>
+                {riskLabel[report.independenceRiskScore.overallIndependenceRisk]} overall
+              </span>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {report.independenceRiskScore.explanationBullets.slice(0, 4).map((bullet) => (
+                <p key={bullet} className="text-sm text-warm-600 bg-warm-50 border border-warm-200 rounded-xl p-3">{bullet}</p>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Opening narrative */}
+        {obs.length > 0 && (
+          <div className="border-l-4 border-brand-400 rounded-r-xl bg-warm-50 p-5 mb-6 animate-fade-in">
+            <p className="text-sm text-warm-700 leading-relaxed">
+              <span className="font-semibold text-warm-900">
+                You completed the walkthrough of {subjectName}'s home.
+              </span>{" "}
+              {obs.length} area{obs.length !== 1 ? "s" : ""} came up for review
+              {highObs.length > 0
+                ? `, including ${highObs.length} worth addressing soon`
+                : ""}
+              .{" "}
+              {score >= 80
+                ? "The home looks good overall — these fixes will make it even safer."
+                : score >= 60
+                  ? "There are a few things worth addressing. Most are straightforward fixes."
+                  : "Some important things came up. This report gives you a clear path forward."}
+              {" "}Here's what we found, room by room.
+            </p>
+          </div>
+        )}
+
         {/* Tabs */}
-        <div className="flex gap-1 bg-warm-100 p-1 rounded-xl border border-warm-200 mb-6 overflow-x-auto no-print">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`shrink-0 py-2 px-3 rounded-lg text-xs font-medium transition-all ${
-                activeTab === tab.id
-                  ? "bg-white text-warm-900 shadow"
-                  : "text-warm-500 hover:text-warm-700"
-              }`}
-            >
-              {tab.label}
-              {tab.id === "premium" && (
-                <Star className="w-2.5 h-2.5 inline ml-1 text-amber-500" />
-              )}
-            </button>
-          ))}
-        </div>
+        <ReportTabBar tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
 
         {/* Tab content */}
         <div className="animate-fade-in">
@@ -496,7 +1391,7 @@ export default function ReportPage() {
                     <h3 className="font-semibold text-warm-900 mb-3">Room-by-Room Risk Heatmap</h3>
                     <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
                       {Object.entries(byRoom).map(([room, roomObs]) => {
-                        const maxSeverity = Math.max(...roomObs.map((o) => o.adjustedSeverity));
+                        const maxSeverity = Math.max(...roomObs.map((o) => o.adjustedSeverity ?? 0));
                         const bg =
                           maxSeverity >= 8
                             ? "bg-red-50 border-red-200"
@@ -558,8 +1453,8 @@ export default function ReportPage() {
                               <p className="text-xs text-warm-500 mt-0.5">{o.recommendation}</p>
                             </div>
                             <div className="text-right shrink-0">
-                              <p className="text-sm font-bold text-red-600">{o.adjustedSeverity}/10</p>
-                              <p className="text-xs text-warm-400">{o.fallProbability}% risk</p>
+                              <p className="text-sm font-bold text-red-600">{o.adjustedSeverity ?? "—"}/10</p>
+                              <p className="text-xs text-warm-400">{o.fallProbability != null ? `${o.fallProbability}% risk` : ""}</p>
                             </div>
                           </div>
                         ))}
@@ -574,6 +1469,16 @@ export default function ReportPage() {
                 </>
               )}
             </div>
+          )}
+
+          {/* Family Dashboard */}
+          {activeTab === "dashboard" && (
+            <FamilyDashboardTab
+              report={report}
+              onStatusChange={handlePlanStatusChange}
+              onActionUpdate={handlePlanActionUpdate}
+              onEvidenceAdded={handleEvidenceAdded}
+            />
           )}
 
           {/* Room Findings */}
@@ -597,14 +1502,57 @@ export default function ReportPage() {
           )}
 
           {/* Shopping list */}
-          {activeTab === "shopping" && <ShoppingList observations={obs} />}
+          {activeTab === "shopping" && (
+            <ShoppingList
+              observations={obs}
+              sessionId={report.sessionId}
+              reportId={report.sessionId}
+            />
+          )}
 
           {/* Contractor scope */}
-          {activeTab === "contractor" && <ContractorScope observations={obs} />}
+          {activeTab === "contractor" && (
+            <ContractorScope observations={obs} sessionId={report.sessionId} />
+          )}
 
           {/* Action plan */}
           {activeTab === "action" && (
             <div className="space-y-5">
+              {report.independencePlan && report.independencePlan.length > 0 && (
+                <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+                  <h3 className="font-bold text-warm-900 mb-1 flex items-center gap-2">
+                    <ClipboardList className="w-5 h-5 text-brand-600" />
+                    Independence Plan
+                  </h3>
+                  <p className="text-sm text-warm-500 mb-4">
+                    Create a plan your family, caregiver, contractor, clinician, or care coordinator can act on.
+                  </p>
+                  <div className="space-y-5">
+                    {(["immediate", "this_week", "this_month", "monitor"] as const).map((priority) => {
+                      const items = report.independencePlan?.filter((item) => item.priority === priority) ?? [];
+                      if (items.length === 0) return null;
+                      return (
+                        <section key={priority}>
+                          <h4 className="text-sm font-semibold text-warm-700 mb-2">{priority.replace("_", " ")}</h4>
+                          <div className="grid lg:grid-cols-2 gap-3">
+                            {items.map((item) => (
+                              <PlanItemCard
+                                key={item.id}
+                                item={item}
+                                sessionId={report.sessionId}
+                                onStatusChange={handlePlanStatusChange}
+                                onActionUpdate={handlePlanActionUpdate}
+                                onEvidenceAdded={handleEvidenceAdded}
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Immediate */}
               <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
                 <h3 className="font-bold text-warm-900 mb-4 flex items-center gap-2">
@@ -708,8 +1656,109 @@ export default function ReportPage() {
             </div>
           )}
 
+          {/* Service requests */}
+          {activeTab === "services" && (
+            <ServiceRequestsPanel
+              sessionId={report.sessionId}
+              onScrollToContractor={() => {
+                setActiveTab("contractor");
+                setTimeout(() => {
+                  document.getElementById("contractor-lead-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }, 0);
+              }}
+            />
+          )}
+
+          {/* Care notes */}
+          {activeTab === "care" && (
+            <CareNotesPanel sessionId={report.sessionId} />
+          )}
+
+          {/* Prevention summary */}
+          {activeTab === "prevention" && (
+            <div className="space-y-4">
+              {report.memorySupportChecklist?.show && (
+                <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+                  <h3 className="font-bold text-warm-900 mb-2 flex items-center gap-2">
+                    <Brain className="w-5 h-5 text-brand-600" />
+                    {report.memorySupportChecklist.title}
+                  </h3>
+                  <p className="text-sm text-warm-600 mb-4">{report.memorySupportChecklist.education}</p>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs font-semibold text-warm-400 mb-2">SIGNS TO DISCUSS</p>
+                      <ul className="space-y-2">
+                        {report.memorySupportChecklist.checklistItems.map((item) => (
+                          <li key={item} className="text-sm text-warm-700 flex gap-2">
+                            <CheckCircle className="w-4 h-4 text-brand-600 shrink-0 mt-0.5" />
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="space-y-3">
+                      {[...report.memorySupportChecklist.routineSuggestions, ...report.memorySupportChecklist.familyCommunicationTips].slice(0, 5).map((item) => (
+                        <p key={item} className="text-sm text-warm-700 bg-warm-50 border border-warm-200 rounded-xl p-3">{item}</p>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="text-xs text-warm-500 mt-4">{report.memorySupportChecklist.disclaimer}</p>
+                </div>
+              )}
+
+              {report.preventionSummary ? (
+                <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm">
+                  <h3 className="font-bold text-warm-900 mb-2 flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-brand-600" />
+                    Care Coordinator / Insurer Summary
+                  </h3>
+                  <p className="text-sm text-warm-500 mb-4">For sharing with a care coordinator, insurer, home care agency, contractor, or service provider.</p>
+                  <div className="grid lg:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs font-semibold text-warm-400 mb-2">PROFILE</p>
+                      <p className="text-sm text-warm-700 bg-warm-50 border border-warm-200 rounded-xl p-3">{report.preventionSummary.seniorProfileSummary}</p>
+                      <p className="text-xs font-semibold text-warm-400 mt-4 mb-2">SERVICE CATEGORIES</p>
+                      <div className="flex flex-wrap gap-2">
+                        {report.preventionSummary.estimatedServiceCategoriesNeeded.map((item) => (
+                          <span key={item} className="px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-200 text-xs font-semibold">
+                            {item.replace(/_/g, " ")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-warm-400 mb-2">TOP INTERVENTIONS</p>
+                      <ul className="space-y-2">
+                        {report.preventionSummary.topRecommendedInterventions.slice(0, 6).map((item) => (
+                          <li key={item} className="text-sm text-warm-700 flex gap-2">
+                            <HeartHandshake className="w-4 h-4 text-brand-600 shrink-0 mt-0.5" />
+                            {item}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                  <p className="text-xs text-warm-500 mt-4">{report.preventionSummary.disclaimer}</p>
+                </div>
+              ) : (
+                <div className="bg-white border border-warm-200 rounded-2xl p-6 shadow-sm text-sm text-warm-500">
+                  Prevention Summary will appear on new reports.
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Premium */}
-          {activeTab === "premium" && <PremiumSection />}
+          {activeTab === "premium" && (
+            <PremiumSection
+              onScrollToContractor={() => {
+                setActiveTab("contractor");
+                setTimeout(() => {
+                  document.getElementById("contractor-lead-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }, 0);
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
